@@ -1,0 +1,12 @@
+{
+    "python.analysis.extraPaths": [
+        "/opt/ros/noetic/lib/python3/dist-packages",
+        "/home/xiapilang/catkin_workspace/devel/lib/python3/dist-packages",
+        "/home/xiapilang/catkin_ws/devel/lib/python3/dist-packages"
+    ],
+    "python.autoComplete.extraPaths": [
+        "/opt/ros/noetic/lib/python3/dist-packages",
+        "/home/xiapilang/catkin_workspace/devel/lib/python3/dist-packages",
+        "/home/xiapilang/catkin_ws/devel/lib/python3/dist-packages"
+    ]
+}

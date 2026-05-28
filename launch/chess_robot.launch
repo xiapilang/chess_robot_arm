@@ -1,0 +1,114 @@
+<launch>
+  <!-- ===========================================================
+       国际象棋机械臂对弈系统 —— 主启动文件
+       一键启动完整流水线的全部四个节点:
+         1. ArUco 棋盘角点检测
+         2. YOLOv8 棋子分类
+         3. 国际象棋 AI 协调器（python-chess + Stockfish）
+         4. 运动规划器（Kinova 机械臂抓取-放置）
+       =========================================================== -->
+
+  <!-- ====== 机械臂名称 ====== -->
+  <arg name="robot_name" default="my_gen3_lite" />
+
+  <!-- ====== 相机参数 ====== -->
+  <arg name="camera_width"  default="1280" />
+  <arg name="camera_height" default="720" />
+  <arg name="camera_fps"    default="30" />
+
+  <!-- ====== ArUco 标签参数 ====== -->
+  <arg name="aruco_marker_size"     default="0.05" />
+  <arg name="aruco_dict_name"       default="DICT_6X6_250" />
+  <arg name="aruco_top_left_id"     default="0" />
+  <arg name="aruco_top_right_id"    default="1" />
+  <arg name="aruco_bottom_left_id"  default="2" />
+  <arg name="aruco_bottom_right_id" default="3" />
+
+  <!-- ====== YOLO 模型路径 ====== -->
+  <arg name="model_path" default="./runs/chess_piece/weights/best.pt" />
+
+  <!-- ====== Stockfish 引擎路径 ====== -->
+  <arg name="stockfish_path" default="/usr/games/stockfish" />
+
+  <!-- ====== AI 思考时间（秒） ====== -->
+  <arg name="think_time" default="3.0" />
+
+  <!-- ====== 棋盘 Z 高度（固定安全值，避免机械臂撞向桌面） ====== -->
+  <arg name="board_z" default="0.38" />
+
+  <!-- ====== 夹爪姿态（欧拉角，度） ====== -->
+  <arg name="gripper_orientation_deg" default="[0.0, 180.0, 45.0]" />
+
+  <!-- ==========================================
+       Node 1: ArUco 棋盘角点检测
+       发布话题:
+         /chessboard_corners_3d  —— 棋盘四角 3D 坐标（相机系）
+         /chessboard_corners_2d  —— 棋盘四角 2D 像素坐标
+         /camera/color/image_raw —— 原始彩色图像
+       ========================================== -->
+  <node name="chessboard_detector" pkg="chess_robot_arm"
+        type="board_detector.py" output="screen">
+    <param name="marker_size"           value="$(arg aruco_marker_size)" />
+    <param name="aruco_dictionary_name" value="$(arg aruco_dict_name)" />
+    <param name="top_left_id"           value="$(arg aruco_top_left_id)" />
+    <param name="top_right_id"          value="$(arg aruco_top_right_id)" />
+    <param name="bottom_left_id"        value="$(arg aruco_bottom_left_id)" />
+    <param name="bottom_right_id"       value="$(arg aruco_bottom_right_id)" />
+    <param name="color_width"           value="$(arg camera_width)" />
+    <param name="color_height"          value="$(arg camera_height)" />
+    <param name="fps"                   value="$(arg camera_fps)" />
+    <param name="show_cv_window"        value="true" />
+    <param name="camera_frame_id"       value="camera_color_optical_frame" />
+  </node>
+
+  <!-- ==========================================
+       Node 2: YOLOv8 棋子分类器
+       订阅话题:
+         /camera/color/image_raw  —— 原始图像
+         /chessboard_corners_3d   —— 棋盘角点
+       发布话题:
+         /chess_board_matrix      —— 棋盘状态（FEN 字符串）
+       ========================================== -->
+  <node name="piece_classifier" pkg="chess_robot_arm"
+        type="piece_classifier.py" output="screen">
+    <param name="model_path"         value="$(arg model_path)" />
+    <param name="conf_threshold"     value="0.5" />
+    <param name="show_visualization" value="true" />
+  </node>
+
+  <!-- ==========================================
+       Node 3: 国际象棋 AI 协调器
+       订阅话题:
+         /chess_board_matrix       —— 棋盘状态（FEN）
+         /chessboard_corners_3d    —— 棋盘角点（仅首次）
+         /my_gen3_lite/arm_status  —— 机械臂状态
+       发布话题:
+         /kinova_pick_place/goal_in_camera —— 移动指令
+         /ai_eat_status                     —— 吃子状态
+       ========================================== -->
+  <node name="chess_ai_orchestrator" pkg="chess_robot_arm"
+        type="main.py" output="screen">
+    <param name="stockfish_path" value="$(arg stockfish_path)" />
+    <param name="think_time"     value="$(arg think_time)" />
+    <param name="board_z"        value="$(arg board_z)" />
+  </node>
+
+  <!-- ==========================================
+       Node 4: 运动规划器（Kinova 机械臂控制）
+       订阅话题:
+         /kinova_pick_place/goal_in_camera —— 移动目标
+       发布话题:
+         /my_gen3_lite/arm_status           —— 机械臂状态
+       ========================================== -->
+  <node name="motion_planner" pkg="chess_robot_arm"
+        type="motion_planner.py" output="screen">
+    <param name="robot_name"               value="$(arg robot_name)" />
+    <param name="gripper_orientation_deg"  value="$(arg gripper_orientation_deg)" />
+    <param name="pre_action_z_lift"        value="0.05" />
+    <param name="pick_z_offset"            value="0.005" />
+    <param name="place_z_offset"           value="0.01" />
+    <param name="gripper_open"             value="0.7" />
+    <param name="gripper_close"            value="0.25" />
+  </node>
+
+</launch>
