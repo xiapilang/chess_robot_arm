@@ -6,7 +6,7 @@
 # --- 8×8 国际象棋棋盘尺寸 ---
 BOARD_ROWS = 8                     # 棋盘行数
 BOARD_COLS = 8                     # 棋盘列数
-SQUARE_SIZE = 0.04                # 标准比赛棋格边长（约55mm）
+SQUARE_SIZE = 0.04                # 标准比赛棋格边长（约40mm）
 BOARD_WIDTH = SQUARE_SIZE * BOARD_COLS
 BOARD_HEIGHT = SQUARE_SIZE * BOARD_ROWS
 
@@ -16,7 +16,7 @@ ARUCO_TOP_LEFT_ID     = 0          # 棋盘左上角
 ARUCO_TOP_RIGHT_ID    = 1          # 棋盘右上角
 ARUCO_BOTTOM_LEFT_ID  = 2          # 棋盘左下角
 ARUCO_BOTTOM_RIGHT_ID = 3          # 棋盘右下角
-ARUCO_MARKER_SIZE     = 0.06       # ArUco 标签边长 3cm
+ARUCO_MARKER_SIZE     = 0.06       # ArUco 标签边长 6cm
 ARUCO_DICT_NAME       = "DICT_6X6_250"
 
 # --- 国际象棋棋子符号映射 ---
@@ -40,10 +40,10 @@ FEN_TO_PIECE_ID = {v: k for k, v in PIECE_ID_TO_FEN.items()}
 
 # YOLO 分类名称（共 12 类）
 PIECE_CLASS_NAMES = [
-    "white_king", "white_queen", "white_rook", "white_bishop",
-    "white_knight", "white_pawn",
     "black_king", "black_queen", "black_rook", "black_bishop",
     "black_knight", "black_pawn",
+    "white_king", "white_queen", "white_rook", "white_bishop",
+    "white_knight", "white_pawn",
 ]
 
 # 空格占位符
@@ -79,22 +79,22 @@ HOME_JOINT_ANGLES_DEG = [30.66, 346.57, 72.23, 270.08, 265.45, 345.69]
 # --- 标定完成后机械臂避让位姿（笛卡尔坐标，避开相机视野） ---
 # 用于 ArUco 角点检测完毕后、棋子识别开始前，机械臂移到此位置
 POST_CALIB_HOME = {
-    "x": 0.126,
-    "y": 0.378,
-    "z": 0.233,
-    "rx": 141.5,
-    "ry": -1.9,
-    "rz": 36.9
+    "x": 0.046,
+    "y": 0.355,
+    "z": 0.293,
+    "rx": 141.7,
+    "ry": 0.5,
+    "rz": 38.2
 }
 
 # --- 机械臂运动参数 ---
 DEFAULT_GRIPPER_ORIENTATION_DEG = [0.0, 180.0, 45.0]  # 夹爪姿态 (roll, pitch, yaw)
-PRE_ACTION_Z_LIFT = 0.05         # 抓取/放置前在目标上方的抬升高度
-PICK_Z_OFFSET = 0.005             # 抓取时的 Z 轴微调偏移
-PLACE_Z_OFFSET = 0.01             # 放置时的 Z 轴微调偏移
-GRIPPER_OPEN_VALUE = 0.7          # 夹爪张开 70%（接近物体前）
-GRIPPER_CLOSE_VALUE = 0.25        # 夹爪闭合至 25%（夹住棋子）
-MOTION_DURATION = 3.5             # 默认轨迹执行时间（秒）
+PRE_ACTION_Z_LIFT = 0.08        # 抓取/放置前在目标上方的抬升高度
+PICK_Z_OFFSET = -0.005             # 抓取时的 Z 轴微调偏移
+PLACE_Z_OFFSET = -0.005             # 放置时的 Z 轴微调偏移
+GRIPPER_OPEN_VALUE = 0.34          # 夹爪闭合至 66%（接近物体前）
+GRIPPER_CLOSE_VALUE = 0.04        # 夹爪闭合至 4%（夹住棋子）
+MOTION_DURATION = 4.5             # 默认轨迹执行时间（秒）
 
 # --- 相机参数（Intel RealSense D435 默认值，运行时可被 ROS param 覆盖） ---
 CAMERA_WIDTH  = 1280
