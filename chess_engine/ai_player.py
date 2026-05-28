@@ -57,9 +57,13 @@ class ChessAI:
                 return result.move, None
             except Exception as e:
                 print(f"Stockfish 引擎出错: {e}，降级为简易 AI。")
+                try:
+                    self.engine.quit()
+                except Exception:
+                    pass
                 self.engine = None
 
-        return self._fallback_move(board)
+        return self._fallback_move(board), None
 
     def _fallback_move(self, board):
         """简易降级 AI：优先吃子，其次将军，否则随机走。"""

@@ -22,7 +22,7 @@ from sensor_msgs.msg import JointState
 from kortex_driver.msg import BaseCyclic_Feedback
 from std_msgs.msg import String
 from chess_robot_arm.msg import PickAndPlaceGoalInCamera
-from chess_robot_arm.utils.constants import POST_CALIB_HOME
+from chess_robot_arm.utils.constants import POST_CALIB_HOME, PRE_CALIB_HOME
 
 
 class MotionPlanner:
@@ -83,6 +83,7 @@ class MotionPlanner:
         self.place_z_offset  = rospy.get_param("~place_z_offset", 0.01)
         self.gripper_open_val  = rospy.get_param("~gripper_open", 0.7)
         self.gripper_close_val = rospy.get_param("~gripper_close", 0.25)
+        self.use_base_frame_coords = rospy.get_param("~use_base_frame_coords", True)
 
         # --- 获取当前关节状态 ---
         self.current_joints_rad = None
@@ -111,10 +112,13 @@ class MotionPlanner:
             self._set_state(self.STATE_ERROR)
             return
 
-        # --- 初始归位 ---
+        # --- 初始归位（先到中间点避免相机碰撞，再到标定后避让位置） ---
         rospy.loginfo("正在执行初始归位...")
         self._set_state(self.STATE_BUSY)
-        if not self._go_post_calib_home():
+        if not self._go_pre_calib_home():
+            rospy.logwarn("移动至中间点失败。")
+            self._set_state(self.STATE_ERROR)
+        elif not self._go_post_calib_home():
             rospy.logwarn("归位失败。")
             self._set_state(self.STATE_ERROR)
         else:
@@ -251,6 +255,18 @@ class MotionPlanner:
         rospy.loginfo(f"--- {action_name} 序列完成 ---")
         return True
 
+    def _go_pre_calib_home(self):
+        """初次启动时先移动到中间安全点，避免相机与机械臂碰撞。"""
+        rospy.loginfo("先移动到中间安全点（避开相机）...")
+        return self.arm.go_home(
+            home_x=PRE_CALIB_HOME["x"],
+            home_y=PRE_CALIB_HOME["y"],
+            home_z=PRE_CALIB_HOME["z"],
+            home_rx=PRE_CALIB_HOME["rx"],
+            home_ry=PRE_CALIB_HOME["ry"],
+            home_rz=PRE_CALIB_HOME["rz"],
+        )
+
     def _go_post_calib_home(self):
         """使用 POST_CALIB_HOME 参数归位。"""
         return self.arm.go_home(
@@ -292,20 +308,28 @@ class MotionPlanner:
         rospy.loginfo(f"收到目标: 抓取 '{msg.object_id_at_pick}' "
                       f"-> 放置 '{msg.target_location_id_at_place}'")
 
-        # 获取当前 T_base_camera 快照
-        T_cam = self._get_T_base_camera()
-        if T_cam is None:
-            rospy.logerr("无法获取 T_base_camera，中止操作。")
-            self._go_post_calib_home()
-            self._set_state(self.STATE_ERROR)
-            return
-
-        # 坐标变换：相机系 → 基座标系
-        pick_base  = self._camera_to_base(msg.pick_position_in_camera, T_cam)
-        place_base = self._camera_to_base(msg.place_position_in_camera, T_cam)
-
-        rospy.loginfo(f"  抓取点 (基座标系): {np.round(pick_base, 3)}")
-        rospy.loginfo(f"  放置点 (基座标系): {np.round(place_base, 3)}")
+        if self.use_base_frame_coords:
+            # 坐标已经是基座标系，直接使用
+            pick_base = np.array([msg.pick_position_in_camera.x,
+                                  msg.pick_position_in_camera.y,
+                                  msg.pick_position_in_camera.z])
+            place_base = np.array([msg.place_position_in_camera.x,
+                                   msg.place_position_in_camera.y,
+                                   msg.place_position_in_camera.z])
+            rospy.loginfo(f"  抓取点 (基座标系直出): {np.round(pick_base, 3)}")
+            rospy.loginfo(f"  放置点 (基座标系直出): {np.round(place_base, 3)}")
+        else:
+            # 相机系 → 基座标系变换
+            T_cam = self._get_T_base_camera()
+            if T_cam is None:
+                rospy.logerr("无法获取 T_base_camera，中止操作。")
+                self._go_post_calib_home()
+                self._set_state(self.STATE_ERROR)
+                return
+            pick_base  = self._camera_to_base(msg.pick_position_in_camera, T_cam)
+            place_base = self._camera_to_base(msg.place_position_in_camera, T_cam)
+            rospy.loginfo(f"  抓取点 (基座标系): {np.round(pick_base, 3)}")
+            rospy.loginfo(f"  放置点 (基座标系): {np.round(place_base, 3)}")
 
         # 执行抓取
         if not self._pick_or_place("抓取", pick_base, self.pick_z_offset, True):

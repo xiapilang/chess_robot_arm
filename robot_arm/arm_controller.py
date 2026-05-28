@@ -43,9 +43,10 @@ class KinovaArmController:
             rospy.wait_for_service(clear_faults_srv)
             self.clear_faults = rospy.ServiceProxy(clear_faults_srv, Base_ClearFaults)
 
-            execute_action_srv = f'/{self.robot_name}/base/execute_action'
-            rospy.wait_for_service(execute_action_srv)
-            self.execute_action = rospy.ServiceProxy(execute_action_srv, ExecuteAction)
+            execute_traj_srv = f'/{self.robot_name}/base/execute_waypoint_trajectory'
+            rospy.wait_for_service(execute_traj_srv)
+            self.execute_waypoint_trajectory = rospy.ServiceProxy(
+                execute_traj_srv, ExecuteWaypointTrajectory)
 
             if self.is_gripper_present:
                 gripper_srv = f'/{self.robot_name}/base/send_gripper_command'
@@ -100,22 +101,37 @@ class KinovaArmController:
         return False
 
     def activate(self):
-        """清除故障并激活动作通知。"""
+        """清除故障并激活动作通知（带重试，应对 Kortex ActionServer 初始化延迟）。"""
         if not self.is_init_success:
             return False
-        try:
-            self.clear_faults()
-            rospy.sleep(1.0)
-            self.activate_notifications(OnNotificationActionTopicRequest())
-            rospy.sleep(1.0)
-            return True
-        except rospy.ServiceException as e:
-            rospy.logerr(f"激活失败: {e}")
-            return False
+
+        # 等待 Kortex 内部 ActionServer 完全初始化
+        rospy.loginfo("等待 Kortex ActionServer 就绪...")
+        rospy.sleep(3.0)
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                self.clear_faults()
+                rospy.sleep(1.0)
+                self.activate_notifications(OnNotificationActionTopicRequest())
+                rospy.sleep(1.0)
+                rospy.loginfo("机械臂激活成功。")
+                return True
+            except rospy.ServiceException as e:
+                rospy.logwarn(f"激活失败 (尝试 {attempt+1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    rospy.sleep(2.0)
+
+        rospy.logerr(f"机械臂激活失败，已重试 {max_retries} 次。")
+        return False
 
     def move_to_cartesian_pose(self, x, y, z, theta_x, theta_y, theta_z):
         """
         将末端执行器移动到指定的绝对笛卡尔位姿。
+
+        使用 execute_waypoint_trajectory 服务（绕过 execute_action 的
+        ActionServer 故障问题）。
 
         参数:
             x, y, z: 目标位置（米，基座标系）
@@ -126,23 +142,28 @@ class KinovaArmController:
 
         self.last_action_notif_type = None
 
-        req = ExecuteActionRequest()
-        traj = WaypointList()
         wp = self._fill_cartesian_waypoint(x, y, z, theta_x, theta_y, theta_z)
-        traj.waypoints.append(wp)
-        traj.duration = 0
-        traj.use_optimal_blending = False
-        req.input.oneof_action_parameters.execute_waypoint_list.append(traj)
+        req = ExecuteWaypointTrajectoryRequest()
+        req.input.waypoints.append(wp)
+        req.input.duration = 0
+        req.input.use_optimal_blending = False
 
         rospy.loginfo(f"移动到: X={x:.3f} Y={y:.3f} Z={z:.3f} "
                       f"Rx={theta_x:.1f} Ry={theta_y:.1f} Rz={theta_z:.1f}")
-        try:
-            self.execute_action(req)
-            rospy.sleep(2.0)
-            return True
-        except rospy.ServiceException as e:
-            rospy.logerr(f"笛卡尔移动失败: {e}")
-            return False
+
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                self.execute_waypoint_trajectory(req)
+                rospy.sleep(2.0)
+                return True
+            except rospy.ServiceException as e:
+                rospy.logwarn(f"笛卡尔移动失败 (尝试 {attempt+1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    rospy.sleep(2.0)
+
+        rospy.logerr(f"笛卡尔移动失败，已重试 {max_retries} 次。")
+        return False
 
     def move_gripper(self, value):
         """

@@ -1,11 +1,20 @@
 <launch>
   <!-- ===========================================================
-       国际象棋机械臂对弈系统 —— 主启动文件
-       一键启动完整流水线的全部四个节点:
-         1. ArUco 棋盘角点检测
-         2. YOLOv8 棋子分类
-         3. 国际象棋 AI 协调器（python-chess + Stockfish）
-         4. 运动规划器（Kinova 机械臂抓取-放置）
+       国际象棋机械臂对弈系统 —— 主启动文件（终端输入版）
+
+       启动顺序:
+         1. motion_planner  →  机械臂激活并移动到待机位置
+         2. board_detector  →  等待机械臂归位后，启动 ArUco 棋盘定位
+         3. main.py（手动） →  终端输入对弈
+
+       AI 协调器（main.py）需要在单独的终端手动运行，
+       因为需要交互式 stdin 输入。
+
+       用法:
+         1. roslaunch chess_robot_arm chess_robot.launch   # 启动本文件
+         2. rosrun chess_robot_arm main.py                  # 另开终端运行 AI
+
+       注意: 不再使用 YOLO 棋子识别，棋盘状态由用户在终端手动输入。
        =========================================================== -->
 
   <!-- ====== 机械臂名称 ====== -->
@@ -23,18 +32,6 @@
   <arg name="aruco_top_right_id"    default="1" />
   <arg name="aruco_bottom_left_id"  default="2" />
   <arg name="aruco_bottom_right_id" default="3" />
-
-  <!-- ====== YOLO 模型路径 ====== -->
-  <arg name="model_path" default="./runs/chess_piece/weights/best.pt" />
-
-  <!-- ====== Stockfish 引擎路径 ====== -->
-  <arg name="stockfish_path" default="/usr/games/stockfish" />
-
-  <!-- ====== AI 思考时间（秒） ====== -->
-  <arg name="think_time" default="3.0" />
-
-  <!-- ====== 棋盘 Z 高度（固定安全值，避免机械臂撞向桌面） ====== -->
-  <arg name="board_z" default="0.38" />
 
   <!-- ====== 夹爪姿态（欧拉角，度） ====== -->
   <arg name="gripper_orientation_deg" default="[0.0, 180.0, 45.0]" />
@@ -59,42 +56,11 @@
     <param name="fps"                   value="$(arg camera_fps)" />
     <param name="show_cv_window"        value="true" />
     <param name="camera_frame_id"       value="camera_color_optical_frame" />
+    <param name="wait_for_arm_home"     value="true" />
   </node>
 
   <!-- ==========================================
-       Node 2: YOLOv8 棋子分类器
-       订阅话题:
-         /camera/color/image_raw  —— 原始图像
-         /chessboard_corners_3d   —— 棋盘角点
-       发布话题:
-         /chess_board_matrix      —— 棋盘状态（FEN 字符串）
-       ========================================== -->
-  <node name="piece_classifier" pkg="chess_robot_arm"
-        type="piece_classifier.py" output="screen">
-    <param name="model_path"         value="$(arg model_path)" />
-    <param name="conf_threshold"     value="0.5" />
-    <param name="show_visualization" value="true" />
-  </node>
-
-  <!-- ==========================================
-       Node 3: 国际象棋 AI 协调器
-       订阅话题:
-         /chess_board_matrix       —— 棋盘状态（FEN）
-         /chessboard_corners_3d    —— 棋盘角点（仅首次）
-         /my_gen3_lite/arm_status  —— 机械臂状态
-       发布话题:
-         /kinova_pick_place/goal_in_camera —— 移动指令
-         /ai_eat_status                     —— 吃子状态
-       ========================================== -->
-  <node name="chess_ai_orchestrator" pkg="chess_robot_arm"
-        type="main.py" output="screen">
-    <param name="stockfish_path" value="$(arg stockfish_path)" />
-    <param name="think_time"     value="$(arg think_time)" />
-    <param name="board_z"        value="$(arg board_z)" />
-  </node>
-
-  <!-- ==========================================
-       Node 4: 运动规划器（Kinova 机械臂控制）
+       Node 2: 运动规划器（Kinova 机械臂控制）
        订阅话题:
          /kinova_pick_place/goal_in_camera —— 移动目标
        发布话题:
@@ -109,6 +75,16 @@
     <param name="place_z_offset"           value="0.01" />
     <param name="gripper_open"             value="0.7" />
     <param name="gripper_close"            value="0.25" />
+    <param name="use_base_frame_coords"    value="true" />
   </node>
+
+  <!-- ==========================================
+       Node 3（手动启动）: AI 协调器
+       在另一个终端中运行:
+         rosrun chess_robot_arm main.py \
+           _stockfish_path:=/usr/games/stockfish \
+           _think_time:=3.0 \
+           _board_z:=0.38
+       ========================================== -->
 
 </launch>

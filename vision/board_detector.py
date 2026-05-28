@@ -21,7 +21,7 @@ import pyrealsense2 as rs
 
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Point
-from std_msgs.msg import Header
+from std_msgs.msg import Header, String
 from chess_robot_arm.msg import ChessboardCorners, ChessboardPixelCorners
 
 
@@ -46,6 +46,7 @@ class ChessboardArucoDetector:
         self.camera_frame_id = rospy.get_param("~camera_frame_id",
                                                "camera_color_optical_frame")
         self.show_cv_window  = rospy.get_param("~show_cv_window", True)
+        self.wait_for_arm_home = rospy.get_param("~wait_for_arm_home", True)
 
         # --- ArUco 字典与检测器参数 ---
         try:
@@ -62,6 +63,24 @@ class ChessboardArucoDetector:
             self.detector_params = aruco.DetectorParameters()
         except AttributeError:
             self.detector_params = aruco.DetectorParameters_create()
+
+        # --- 等待机械臂归位（避免遮挡棋盘） ---
+        if self.wait_for_arm_home:
+            rospy.loginfo("等待机械臂归位 (arm_status='0')...")
+            self._arm_status = None
+
+            def _arm_status_cb(msg):
+                self._arm_status = msg.data
+
+            arm_sub = rospy.Subscriber(
+                "/my_gen3_lite/arm_status", String, _arm_status_cb)
+            rate = rospy.Rate(2)
+            while not rospy.is_shutdown() and self._arm_status != "0":
+                rospy.loginfo_throttle(5,
+                    f"  机械臂状态={self._arm_status}，等待归位...")
+                rate.sleep()
+            arm_sub.unregister()
+            rospy.loginfo("机械臂已归位，开始相机初始化...")
 
         # --- RealSense 相机管线初始化（仅使用彩色流） ---
         self.cam_w = rospy.get_param("~color_width", 1280)
