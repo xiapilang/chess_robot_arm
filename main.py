@@ -24,7 +24,9 @@ from geometry_msgs.msg import Point
 from std_msgs.msg import String
 from chess_robot_arm.msg import PickAndPlaceGoalInCamera, ChessboardCorners
 
-from chess_robot_arm.chess_engine.ai_player import ai_move_from_board, uci_to_matrix_coords
+from chess_robot_arm.chess_engine.ai_player import (
+    ai_move_from_board, uci_to_matrix_coords, close_session_engine,
+)
 from chess_robot_arm.chess_engine.game_state import GameState
 from chess_robot_arm.utils.constants import (
     BOARD_ROWS, BOARD_COLS, EMPTY_SQUARE, BOARD_CORNERS_BASE,
@@ -41,20 +43,21 @@ class TerminalChessOrchestrator:
         self.game = GameState(robot_plays_as=chess.BLACK)
         self.board_matrix = self.game.board_to_matrix()
 
+        # --- 棋盘四角（相机系，由 ArUco 检测） ---
+        self.cam_corners = None  # [tl, tr, bl, br] each (x, y)
+
         # --- 棋盘四角（基座标系，手动测量） ---
         bc = BOARD_CORNERS_BASE
-        self.tl = np.array([bc["top_left"]["x"],
-                            bc["top_left"]["y"],
-                            bc["top_left"]["z"]])
-        self.tr = np.array([bc["top_right"]["x"],
-                            bc["top_right"]["y"],
-                            bc["top_right"]["z"]])
-        self.bl = np.array([bc["bottom_left"]["x"],
-                            bc["bottom_left"]["y"],
-                            bc["bottom_left"]["z"]])
-        self.br = np.array([bc["bottom_right"]["x"],
-                            bc["bottom_right"]["y"],
-                            bc["bottom_right"]["z"]])
+        self.base_corners = np.array([
+            [bc["top_left"]["x"],     bc["top_left"]["y"]],
+            [bc["top_right"]["x"],    bc["top_right"]["y"]],
+            [bc["bottom_left"]["x"],  bc["bottom_left"]["y"]],
+            [bc["bottom_right"]["x"], bc["bottom_right"]["y"]],
+        ])
+        self.board_z = bc["top_left"]["z"]  # 棋盘表面高度
+
+        # --- 仿射变换: 相机 XY → 基座 XY（ArUco 检测后标定） ---
+        self.affine_M = None  # 2x3 矩阵
 
         # --- 弃子区 ---
         self.garbage_point = None
@@ -94,15 +97,19 @@ class TerminalChessOrchestrator:
 
     def _init_garbage_zone(self):
         """从基座标系棋盘角点计算弃子区参考位置。"""
+        tl = self.base_corners[0]  # top_left
+        tr = self.base_corners[1]  # top_right
+        br = self.base_corners[3]  # bottom_right
+
         self.garbage_point = Point()
-        self.garbage_point.x = 2 * self.tr[0] - self.tl[0]
-        self.garbage_point.y = 2 * self.tr[1] - self.tl[1]
-        self.garbage_point.z = 2 * self.tr[2] - self.tl[2]
+        self.garbage_point.x = 2 * tr[0] - tl[0]
+        self.garbage_point.y = 2 * tr[1] - tl[1]
+        self.garbage_point.z = self.board_z
 
         self.garbage_offset = Point()
-        self.garbage_offset.x = (self.tr[0] - self.br[0]) / 8
-        self.garbage_offset.y = (self.tr[1] - self.br[1]) / 8
-        self.garbage_offset.z = (self.tr[2] - self.br[2]) / 8
+        self.garbage_offset.x = (tr[0] - br[0]) / 8
+        self.garbage_offset.y = (tr[1] - br[1]) / 8
+        self.garbage_offset.z = 0.0
 
     # ------------------------------------------------------------------
     # ROS 回调
@@ -112,27 +119,63 @@ class TerminalChessOrchestrator:
         self.arm_status = msg.data
 
     def _corners_callback(self, msg):
-        """ArUco 角点回调：仅用于确认棋盘在位，不使用相机系坐标。"""
-        if not self.corners_received:
-            self.corners_received = True
-            rospy.loginfo("ArUco 棋盘角点已接收（棋盘在位确认）。")
-            rospy.loginfo(f"  棋盘四角基座标系: TL={self.tl}, TR={self.tr}, "
-                          f"BL={self.bl}, BR={self.br}")
-            self.corners_sub.unregister()
+        """ArUco 角点回调：存储相机系坐标并标定仿射变换。"""
+        if self.corners_received:
+            return
+
+        # 存储相机系四角 XY（ArUco 定位精确，Z 不可靠）
+        self.cam_corners = np.array([
+            [msg.top_left.x,     msg.top_left.y],
+            [msg.top_right.x,    msg.top_right.y],
+            [msg.bottom_left.x,  msg.bottom_left.y],
+            [msg.bottom_right.x, msg.bottom_right.y],
+        ])
+
+        # 标定仿射变换：相机 XY → 基座 XY
+        self._calibrate_affine()
+
+        self.corners_received = True
+        rospy.loginfo("ArUco 棋盘标定完成。")
+        rospy.loginfo(f"  相机四角: {np.round(self.cam_corners, 3).tolist()}")
+        rospy.loginfo(f"  基座四角: {np.round(self.base_corners, 3).tolist()}")
+        self.corners_sub.unregister()
+
+    def _calibrate_affine(self):
+        """用四对点标定 2D 仿射变换（最小二乘）。"""
+        src = self.cam_corners  # 4x2
+        dst = self.base_corners  # 4x2
+
+        # 构造方程: A * [a,b,c,d,e,f]^T = dst.ravel()
+        # x' = a*x + b*y + c,  y' = d*x + e*y + f
+        A = np.zeros((8, 6))
+        for i in range(4):
+            x, y = src[i]
+            A[2*i]     = [x, y, 1, 0, 0, 0]
+            A[2*i + 1] = [0, 0, 0, x, y, 1]
+
+        coeffs, _, _, _ = np.linalg.lstsq(A, dst.ravel(), rcond=None)
+        self.affine_M = coeffs.reshape(2, 3)
+        rospy.loginfo(f"  仿射矩阵:\n{np.round(self.affine_M, 4)}")
 
     # ------------------------------------------------------------------
     # 坐标变换（基座标系双线性插值）
     # ------------------------------------------------------------------
 
     def _matrix_to_base_point(self, col, row):
-        """将 8x8 矩阵 (col, row) 双线性插值为基座标系 3D 点。"""
+        """ArUco 相机帧双线性插值 + 仿射变换 → 基座标系 3D 点。"""
         u = col / float(BOARD_COLS - 1)
         v = row / float(BOARD_ROWS - 1)
 
-        top = self.tl + u * (self.tr - self.tl)
-        bot = self.bl + u * (self.br - self.bl)
-        p = top + v * (bot - top)
-        return Point(x=p[0], y=p[1], z=p[2])
+        # 相机帧双线性插值（ArUco XY 精确）
+        c_tl, c_tr = self.cam_corners[0], self.cam_corners[1]
+        c_bl, c_br = self.cam_corners[2], self.cam_corners[3]
+        top = c_tl + u * (c_tr - c_tl)
+        bot = c_bl + u * (c_br - c_bl)
+        cam_xy = top + v * (bot - top)
+
+        # 仿射变换 → 基座 XY
+        base_xy = self.affine_M @ np.array([cam_xy[0], cam_xy[1], 1.0])
+        return Point(x=base_xy[0], y=base_xy[1], z=self.board_z)
 
     def _get_garbage_place(self):
         """计算弃子区中下一个棋子的放置位置。"""
@@ -314,60 +357,63 @@ class TerminalChessOrchestrator:
         print("机械臂执黑（后手），你执白（先手）。")
         print("在实体棋盘上走完一步后，在此终端输入你的走法。\n")
 
-        while not rospy.is_shutdown():
-            # --- 1. 获取用户走法 ---
-            result = self._get_user_input()
-            if result is None:
-                rospy.loginfo("退出对弈。")
-                break
+        try:
+            while not rospy.is_shutdown():
+                # --- 1. 获取用户走法 ---
+                result = self._get_user_input()
+                if result is None:
+                    rospy.loginfo("退出对弈。")
+                    break
 
-            self._print_board()
+                self._print_board()
 
-            # --- 2. 检查游戏是否结束 ---
-            if self.game.is_game_over():
-                print(f"对局结束！结果: {self.game.result()}")
-                break
+                # --- 2. 检查游戏是否结束 ---
+                if self.game.is_game_over():
+                    print(f"对局结束！结果: {self.game.result()}")
+                    break
 
-            # --- 3. AI 计算走法 ---
-            print("AI 思考中...")
-            fen = self.game.get_fen()
-            ai_result = ai_move_from_board(
-                fen, ai_color=chess.BLACK,
-                think_time=self.think_time,
-                stockfish_path=self.stockfish_path)
+                # --- 3. AI 计算走法 ---
+                print("AI 思考中...")
+                fen = self.game.get_fen()
+                ai_result = ai_move_from_board(
+                    fen, ai_color=chess.BLACK,
+                    think_time=self.think_time,
+                    stockfish_path=self.stockfish_path)
 
-            move_uci, from_sq, to_sq, is_capture, is_en_passant, is_castling = ai_result
+                move_uci, from_sq, to_sq, is_capture, is_en_passant, is_castling = ai_result
 
-            if move_uci is None:
-                print("AI 无法找到走法，对局可能已结束。")
-                break
+                if move_uci is None:
+                    print("AI 无法找到走法，对局可能已结束。")
+                    break
 
-            from_row, from_col = uci_to_matrix_coords(from_sq)
-            to_row, to_col = uci_to_matrix_coords(to_sq)
+                from_row, from_col = uci_to_matrix_coords(from_sq)
+                to_row, to_col = uci_to_matrix_coords(to_sq)
 
-            print(f"AI 走法: {from_sq} -> {to_sq}"
-                  f"  吃子={is_capture}  过路兵={is_en_passant}  易位={is_castling}")
+                print(f"AI 走法: {from_sq} -> {to_sq}"
+                      f"  吃子={is_capture}  过路兵={is_en_passant}  易位={is_castling}")
 
-            # --- 4. 机械臂执行 ---
-            if not self._wait_for_arm_idle():
-                rospy.logwarn("等待机械臂就绪超时，继续等待...")
-                self._wait_for_arm_idle(300)
+                # --- 4. 机械臂执行 ---
+                if not self._wait_for_arm_idle():
+                    rospy.logwarn("等待机械臂就绪超时，继续等待...")
+                    self._wait_for_arm_idle(300)
 
-            self._execute_robot_move(from_row, from_col, to_row, to_col,
-                                     is_capture, is_en_passant, move_uci)
+                self._execute_robot_move(from_row, from_col, to_row, to_col,
+                                         is_capture, is_en_passant, move_uci)
 
-            # --- 5. 更新内部状态 ---
-            self.game.push_uci(move_uci)
-            self.board_matrix = self.game.board_to_matrix()
+                # --- 5. 更新内部状态 ---
+                self.game.push_uci(move_uci)
+                self.board_matrix = self.game.board_to_matrix()
 
-            # --- 6. 打印新棋盘 ---
-            self._print_board()
+                # --- 6. 打印新棋盘 ---
+                self._print_board()
 
-            if self.game.is_game_over():
-                print(f"对局结束！结果: {self.game.result()}")
-                break
+                if self.game.is_game_over():
+                    print(f"对局结束！结果: {self.game.result()}")
+                    break
 
-            print("轮到你了！在实体棋盘走完后输入走法。\n")
+                print("轮到你了！在实体棋盘走完后输入走法。\n")
+        finally:
+            close_session_engine()
 
 
 if __name__ == '__main__':

@@ -12,6 +12,7 @@ import chess
 import chess.engine
 import numpy as np
 import os
+import subprocess
 from chess_robot_arm.utils.constants import BOARD_ROWS, BOARD_COLS, EMPTY_SQUARE
 
 
@@ -35,12 +36,17 @@ class ChessAI:
         """尝试初始化 Stockfish 引擎。"""
         if os.path.exists(self.stockfish_path):
             try:
-                self.engine = chess.engine.SimpleEngine.popen_uci(self.stockfish_path)
+                self.engine = chess.engine.SimpleEngine.popen_uci(
+                    self.stockfish_path,
+                    stderr=subprocess.DEVNULL,
+                    setpgrp=True,
+                    timeout=10.0)
                 self.engine.configure({"Skill Level": self.skill_level})
                 print(f"Stockfish 引擎已初始化（难度等级={self.skill_level}）。")
                 return
             except Exception as e:
                 print(f"Stockfish 初始化失败: {e}。将使用降级 AI。")
+                self.engine = None
         else:
             print(f"未找到 Stockfish（路径: '{self.stockfish_path}'），将使用降级 AI。")
 
@@ -94,10 +100,15 @@ class ChessAI:
         self.close()
 
 
+_session_engine = None  # 模块级引擎单例，避免反复创建销毁进程
+
+
 def ai_move_from_board(board_fen, ai_color=chess.BLACK, think_time=3.0,
                        stockfish_path="/usr/games/stockfish"):
     """
     AI 引擎主接口函数，与原项目 elephant_fish 接口一致。
+
+    引擎进程在整个对弈过程中保持存活，避免每步棋重复创建/销毁。
 
     参数:
         board_fen: 当前棋盘状态的 FEN 字符串
@@ -109,14 +120,18 @@ def ai_move_from_board(board_fen, ai_color=chess.BLACK, think_time=3.0,
         (uci_move_str, from_square, to_square, is_capture, is_en_passant, is_castling)
         失败时返回 (None, None, None, False, False, False)
     """
+    global _session_engine
+
     board = chess.Board(board_fen)
 
     if board.is_game_over():
         return None, None, None, False, False, False
 
-    ai = ChessAI(stockfish_path=stockfish_path, think_time=think_time)
-    move, error = ai.get_best_move(board)
-    ai.close()
+    if _session_engine is None:
+        _session_engine = ChessAI(stockfish_path=stockfish_path,
+                                  think_time=think_time)
+
+    move, error = _session_engine.get_best_move(board)
 
     if move is None:
         print(f"AI 未返回走法。错误: {error}")
@@ -128,12 +143,19 @@ def ai_move_from_board(board_fen, ai_color=chess.BLACK, think_time=3.0,
     from_sq = chess.square_name(move.from_square)
     to_sq   = chess.square_name(move.to_square)
 
-    # 执行走法并打印结果
     board.push(move)
     print(f"AI 走法: {from_sq} -> {to_sq}（吃子={is_capture}, 过路兵={is_en_passant}, 易位={is_castling}）")
     print(board)
 
     return move.uci(), from_sq, to_sq, is_capture, is_en_passant, is_castling
+
+
+def close_session_engine():
+    """在对弈结束时关闭引擎进程。"""
+    global _session_engine
+    if _session_engine is not None:
+        _session_engine.close()
+        _session_engine = None
 
 
 def uci_to_matrix_coords(uci_square):

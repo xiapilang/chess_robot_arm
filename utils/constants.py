@@ -113,8 +113,8 @@ DEFAULT_GRIPPER_ORIENTATION_DEG = [0.0, 180.0, 45.0]  # 夹爪姿态 (roll, pitc
 PRE_ACTION_Z_LIFT = 0.08        # 抓取/放置前在目标上方的抬升高度
 PICK_Z_OFFSET = -0.005             # 抓取时的 Z 轴微调偏移
 PLACE_Z_OFFSET = -0.005             # 放置时的 Z 轴微调偏移
-GRIPPER_OPEN_VALUE = 0.34          # 夹爪闭合至 66%（接近物体前）
-GRIPPER_CLOSE_VALUE = 0.04        # 夹爪闭合至 4%（夹住棋子）
+GRIPPER_OPEN_VALUE = 0.66          # 夹爪闭合至 66%（接近物体前）
+GRIPPER_CLOSE_VALUE = 0.96        # 夹爪闭合至 96%（夹住棋子）
 MOTION_DURATION = 4.5             # 默认轨迹执行时间（秒）
 
 # --- 相机参数（Intel RealSense D435 默认值，运行时可被 ROS param 覆盖） ---

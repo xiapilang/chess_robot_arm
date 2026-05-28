@@ -221,40 +221,111 @@ python utils/calibration.py
 # 按 'q' 键输出标定结果
 ```
 
-### 3. 棋盘四角基座标系标定（棋盘移动后必须重做）
+### 3. 棋盘坐标标定（棋盘移动后必须重做）
 
-系统使用 `BOARD_CORNERS_BASE`（[constants.py](chess_robot_arm/utils/constants.py)）中手动测量的棋盘四角基座标，
-直接双线性插值得到每个格子的抓取/放置坐标，不再依赖 `T_ee_camera` 手眼标定。
+系统使用 **ArUco + 手动锚点 + 仿射变换** 的混合方案获取每个棋盘格子的基座标系坐标，
+不依赖 `T_ee_camera` 手眼标定。
 
-**标定步骤:**
-1. 启动 Kortex 驱动和 motion_planner 让机械臂归位
-2. 手动移动夹爪末端到棋盘左上角 (a8) 格子正上方，贴到棋盘表面
-3. 用 `rosservice call` 的 `execute_waypoint_trajectory` 微调位置直到准确
-4. 记录基座标 `(x, y, z)`，填入 `BOARD_CORNERS_BASE["top_left"]`
-5. 对右上 (h8)、左下 (a1)、右下 (h1) 重复步骤 2-4
-6. 更新 `constants.py` 后重新编译
+#### 原理
 
+```
+ArUco 检测 → 相机帧四角 XY（精确相对定位）
+                  ↓
+         4对点最小二乘 → 仿射矩阵（2×3）
+                  ↓
+         基座帧 XY + board_z → motion_planner
+```
+
+- **ArUco 标签**贴在棋盘四角（ID 0=左上 a8, 1=右上 h8, 2=左下 a1, 3=右下 h1）
+- ArUco 给出每个标签在相机坐标系下的 3D 位置，其 **XY 分量精确**，能准确反映棋盘上各格之间的相对关系
+- `BOARD_CORNERS_BASE` 是手动测量的四角在基座标系中的位置，提供**绝对参考锚点**
+- `main.py` 启动时自动用 4 对点（相机 XY → 基座 XY）计算 6 参数仿射变换：
+  ```
+  x_base = a*x_cam + b*y_cam + c
+  y_base = d*x_cam + e*y_cam + f
+  ```
+- 仿射变换自动处理坐标系之间的旋转、平移、缩放差异，无需手动对齐坐标轴
+- 每个棋格的最终坐标 = 相机帧双线性插值 → 仿射变换 → 基座帧
+
+#### 标定步骤
+
+只需在**棋盘首次放置**或**棋盘位置移动后**执行一次：
+
+**1) 启动机械臂并归位**
 ```bash
-# 微调示例（逐步降低 Z）
+roslaunch kortex_driver gen3_lite.launch robot_name:=my_gen3_lite
+rosrun chess_robot_arm motion_planner.py
+```
+
+**2) 手动测量棋盘四角在基座标系中的位置**
+
+将夹爪末端依次移到棋盘四个角的正上方（贴到棋盘表面），记录基座标 `(x, y, z)`。
+
+以 a8（左上角）为例：
+```bash
+# 清除故障并激活通知
 rosservice call /my_gen3_lite/base/clear_faults "input: {}" && sleep 3
 rosservice call /my_gen3_lite/base/activate_publishing_of_action_topic \
   "input: {type: 0, rate_m_sec: 0, threshold_value: 0.0}" && sleep 1
+
+# 发送初始估计坐标，微调至准确
 rosservice call /my_gen3_lite/base/execute_waypoint_trajectory "
 input:
   waypoints:
     - name: ''
       oneof_type_of_waypoint:
         cartesian_waypoint:
-          - pose: {x: 0.446, y: -0.151, z: 0.05, theta_x: 10.7, theta_y: 177.9, theta_z: 82.7}
+          - pose: {x: 0.45, y: -0.15, z: 0.03, theta_x: 10.7, theta_y: 177.9, theta_z: 82.7}
             reference_frame: 0
             blending_radius: 0.0
   duration: 0
   use_optimal_blending: false
 "
+
+# 逐步降低 Z 至棋盘表面（z 改为 0.01, 0.00, -0.005... 直到夹爪刚好碰到）
+# 确认 XY 对准格子中心后，记录此时的 (x, y, z)
 ```
 
-> 注意: `BOARD_CORNERS_BASE` 内的 z 值统一使用 `-0.011`（棋盘表面高度），
-> 代码中没有 `board_z` 参数，坐标直接以基座标系发布。
+**3) 用同样方法依次测量其余三角：**
+
+| 角 | 棋盘格 | 记录字段 |
+|----|--------|----------|
+| 左上 | a8 | `BOARD_CORNERS_BASE["top_left"]` |
+| 右上 | h8 | `BOARD_CORNERS_BASE["top_right"]` |
+| 左下 | a1 | `BOARD_CORNERS_BASE["bottom_left"]` |
+| 右下 | h1 | `BOARD_CORNERS_BASE["bottom_right"]` |
+
+> 四个角的 z 值统一取棋盘表面高度（通常约 -0.011m），填入 `"z"` 字段。
+
+**4) 更新 [constants.py](chess_robot_arm/utils/constants.py) 并重新编译：**
+```python
+BOARD_CORNERS_BASE = {
+    "top_left":     {"x": 0.446, "y": -0.151, "z": -0.011},
+    "top_right":    {"x": 0.204, "y":  0.090, "z": -0.011},
+    "bottom_left":  {"x": 0.659, "y":  0.087, "z": -0.011},
+    "bottom_right": {"x": 0.427, "y":  0.326, "z": -0.011},
+}
+```
+
+```bash
+cd ~/catkin_ws && catkin_make
+```
+
+**5) 验证标定精度**
+
+启动 `main.py`，日志会输出仿射矩阵和四角坐标对比：
+```
+ArUco 棋盘标定完成。
+  相机四角: [[0.114, -0.221], [0.125, 0.031], [-0.210, -0.239], [-0.249, 0.063]]
+  基座四角: [[0.446, -0.151], [0.204, 0.090], [0.659, 0.087], [0.427, 0.326]]
+  仿射矩阵:
+[[ 1.234  0.056  0.412]
+ [-0.031  1.189  0.087]]
+```
+
+走一步棋，观察机械臂是否准确到达目标格。如有系统偏差，微调 `BOARD_CORNERS_BASE` 的四个角统一加减偏移量即可。
+
+> **何时需要重新标定：** 仅棋盘物理位置移动后。ArUco 标签轻微位置变化不影响，仿射变换会自动补偿。
 
 ### 4. 启动完整系统
 

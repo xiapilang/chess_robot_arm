@@ -81,8 +81,8 @@ class MotionPlanner:
         self.pre_action_lift = rospy.get_param("~pre_action_z_lift", 0.05)
         self.pick_z_offset   = rospy.get_param("~pick_z_offset", 0.005)
         self.place_z_offset  = rospy.get_param("~place_z_offset", 0.01)
-        self.gripper_open_val  = rospy.get_param("~gripper_open", 0.7)
-        self.gripper_close_val = rospy.get_param("~gripper_close", 0.25)
+        self.gripper_open_val  = rospy.get_param("~gripper_open", 0.66)
+        self.gripper_close_val = rospy.get_param("~gripper_close", 0.96)
         self.use_base_frame_coords = rospy.get_param("~use_base_frame_coords", True)
 
         # --- 获取当前关节状态 ---

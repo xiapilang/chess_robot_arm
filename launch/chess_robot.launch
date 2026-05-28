@@ -73,8 +73,8 @@
     <param name="pre_action_z_lift"        value="0.05" />
     <param name="pick_z_offset"            value="0.005" />
     <param name="place_z_offset"           value="0.01" />
-    <param name="gripper_open"             value="0.7" />
-    <param name="gripper_close"            value="0.25" />
+    <param name="gripper_open"             value="0.66" />
+    <param name="gripper_close"            value="0.96" />
     <param name="use_base_frame_coords"    value="true" />
   </node>
 
