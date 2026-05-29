@@ -6,16 +6,16 @@
 # --- 8×8 国际象棋棋盘尺寸 ---
 BOARD_ROWS = 8                     # 棋盘行数
 BOARD_COLS = 8                     # 棋盘列数
-SQUARE_SIZE = 0.04                # 标准比赛棋格边长（约40mm）
+SQUARE_SIZE = 0.04               # 标准比赛棋格边长（约40mm）
 BOARD_WIDTH = SQUARE_SIZE * BOARD_COLS
 BOARD_HEIGHT = SQUARE_SIZE * BOARD_ROWS
 
 # --- 棋盘四角对应的 ArUco 标签 ID ---
 # 约定：从机械臂 home 位置俯瞰棋盘的方向
-ARUCO_TOP_LEFT_ID     = 0          # 棋盘左上角
-ARUCO_TOP_RIGHT_ID    = 1          # 棋盘右上角
-ARUCO_BOTTOM_LEFT_ID  = 2          # 棋盘左下角
-ARUCO_BOTTOM_RIGHT_ID = 3          # 棋盘右下角
+ARUCO_TOP_LEFT_ID     = 1          # 棋盘左上角 (h8)
+ARUCO_TOP_RIGHT_ID    = 0          # 棋盘右上角 (a8)
+ARUCO_BOTTOM_LEFT_ID  = 3          # 棋盘左下角 (h1)
+ARUCO_BOTTOM_RIGHT_ID = 2          # 棋盘右下角 (a1)
 ARUCO_MARKER_SIZE     = 0.06       # ArUco 标签边长 6cm
 ARUCO_DICT_NAME       = "DICT_6X6_250"
 
@@ -88,13 +88,13 @@ PRE_CALIB_HOME = {
 }
 
 # --- 棋盘四角在基座标系中的位置（手动测量，绕过手眼标定） ---
-# 约定: top_left=a8, top_right=h8, bottom_left=a1, bottom_right=h1
+# 约定: top_left=h8, top_right=a8, bottom_left=h1, bottom_right=a1
 # 棋盘移动后需重新测量更新
 BOARD_CORNERS_BASE = {
-    "top_left":     {"x": 0.446, "y": -0.151, "z": -0.011},
-    "top_right":    {"x": 0.204, "y":  0.090, "z": -0.011},
-    "bottom_left":  {"x": 0.659, "y":  0.087, "z": -0.011},
-    "bottom_right": {"x": 0.427, "y":  0.326, "z": -0.011},
+    "top_left":     {"x": 0.185, "y":  0.085, "z": -0.011},
+    "top_right":    {"x": 0.422, "y": -0.168, "z": -0.011},
+    "bottom_left":  {"x": 0.430, "y":  0.314, "z": -0.011},
+    "bottom_right": {"x": 0.648, "y":  0.062, "z": -0.011},
 }
 
 # --- 标定完成后机械臂避让位姿（笛卡尔坐标，避开相机视野） ---
@@ -111,11 +111,15 @@ POST_CALIB_HOME = {
 # --- 机械臂运动参数 ---
 DEFAULT_GRIPPER_ORIENTATION_DEG = [0.0, 180.0, 45.0]  # 夹爪姿态 (roll, pitch, yaw)
 PRE_ACTION_Z_LIFT = 0.08        # 抓取/放置前在目标上方的抬升高度
-PICK_Z_OFFSET = -0.005             # 抓取时的 Z 轴微调偏移
-PLACE_Z_OFFSET = -0.005             # 放置时的 Z 轴微调偏移
+MIN_APPROACH_Z = 0.085            # 最低逼近高度，防止机械臂撞到棋子
+PICK_Z_OFFSET =  0.000             # 抓取时的 Z 轴微调偏移
+PLACE_Z_OFFSET = 0.000             # 放置时的 Z 轴微调偏移
+PICK_XY_OFFSET = {"x": 0.01, "y": -0.01}   # 抓取时的 X/Y 轴微调偏移（手动校准）
+PLACE_XY_OFFSET = {"x": 0.003, "y": -0.017}  # 放置时的 X/Y 轴微调偏移（手动校准）
+PICK_TRANSIT = {"x": 0.425, "y": 0.078, "z": 0.085}  # 抓取前安全中转点，避免碰倒其他棋子
 GRIPPER_OPEN_VALUE = 0.66          # 夹爪闭合至 66%（接近物体前）
-GRIPPER_CLOSE_VALUE = 0.96        # 夹爪闭合至 96%（夹住棋子）
-MOTION_DURATION = 4.5             # 默认轨迹执行时间（秒）
+GRIPPER_CLOSE_VALUE = 0.9        # 夹爪闭合至 90%（夹住棋子）
+MOTION_DURATION = 100            # 默认轨迹执行时间（秒）
 
 # --- 相机参数（Intel RealSense D435 默认值，运行时可被 ROS param 覆盖） ---
 CAMERA_WIDTH  = 1280

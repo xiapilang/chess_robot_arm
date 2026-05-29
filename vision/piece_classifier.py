@@ -159,8 +159,8 @@ class PieceClassifier:
             fen_char = PIECE_ID_TO_FEN.get(det["class_id"], EMPTY_SQUARE)
             cx, cy = det["center"]
 
-            # 按图像比例映射到棋盘格
-            col = int(round(BOARD_COLS * cx / self.latest_image.shape[1]))
+            # 按图像比例映射到棋盘格（图像左侧=h线需翻转为矩阵右侧）
+            col = BOARD_COLS - 1 - int(round(BOARD_COLS * cx / self.latest_image.shape[1]))
             row = int(round(BOARD_ROWS * cy / self.latest_image.shape[0]))
 
             # 边界钳制

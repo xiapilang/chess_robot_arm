@@ -19,6 +19,7 @@
 import rospy
 import sys
 import chess
+import cv2
 import numpy as np
 from geometry_msgs.msg import Point
 from std_msgs.msg import String
@@ -56,8 +57,8 @@ class TerminalChessOrchestrator:
         ])
         self.board_z = bc["top_left"]["z"]  # 棋盘表面高度
 
-        # --- 仿射变换: 相机 XY → 基座 XY（ArUco 检测后标定） ---
-        self.affine_M = None  # 2x3 矩阵
+        # --- 单应性变换: 相机 XY → 基座 XY（ArUco 检测后标定） ---
+        self.H = None  # 3x3 单应性矩阵
 
         # --- 弃子区 ---
         self.garbage_point = None
@@ -132,7 +133,7 @@ class TerminalChessOrchestrator:
         ])
 
         # 标定仿射变换：相机 XY → 基座 XY
-        self._calibrate_affine()
+        self._calibrate_homography()
 
         self.corners_received = True
         rospy.loginfo("ArUco 棋盘标定完成。")
@@ -140,41 +141,30 @@ class TerminalChessOrchestrator:
         rospy.loginfo(f"  基座四角: {np.round(self.base_corners, 3).tolist()}")
         self.corners_sub.unregister()
 
-    def _calibrate_affine(self):
-        """用四对点标定 2D 仿射变换（最小二乘）。"""
-        src = self.cam_corners  # 4x2
-        dst = self.base_corners  # 4x2
-
-        # 构造方程: A * [a,b,c,d,e,f]^T = dst.ravel()
-        # x' = a*x + b*y + c,  y' = d*x + e*y + f
-        A = np.zeros((8, 6))
-        for i in range(4):
-            x, y = src[i]
-            A[2*i]     = [x, y, 1, 0, 0, 0]
-            A[2*i + 1] = [0, 0, 0, x, y, 1]
-
-        coeffs, _, _, _ = np.linalg.lstsq(A, dst.ravel(), rcond=None)
-        self.affine_M = coeffs.reshape(2, 3)
-        rospy.loginfo(f"  仿射矩阵:\n{np.round(self.affine_M, 4)}")
+    def _calibrate_homography(self):
+        """用四对点标定单应性变换（相机 XY → 基座 XY），可处理透视畸变。"""
+        src = self.cam_corners.reshape(4, 1, 2).astype(np.float32)
+        dst = self.base_corners.reshape(4, 1, 2).astype(np.float32)
+        self.H, _ = cv2.findHomography(src, dst)
+        rospy.loginfo(f"  单应性矩阵:\n{np.round(self.H, 4)}")
 
     # ------------------------------------------------------------------
     # 坐标变换（基座标系双线性插值）
     # ------------------------------------------------------------------
 
     def _matrix_to_base_point(self, col, row):
-        """ArUco 相机帧双线性插值 + 仿射变换 → 基座标系 3D 点。"""
+        """ArUco 相机帧双线性插值 + 单应性变换 → 基座标系 3D 点。"""
         u = col / float(BOARD_COLS - 1)
         v = row / float(BOARD_ROWS - 1)
 
-        # 相机帧双线性插值（ArUco XY 精确）
         c_tl, c_tr = self.cam_corners[0], self.cam_corners[1]
         c_bl, c_br = self.cam_corners[2], self.cam_corners[3]
         top = c_tl + u * (c_tr - c_tl)
         bot = c_bl + u * (c_br - c_bl)
         cam_xy = top + v * (bot - top)
 
-        # 仿射变换 → 基座 XY
-        base_xy = self.affine_M @ np.array([cam_xy[0], cam_xy[1], 1.0])
+        pts = np.array([[[cam_xy[0], cam_xy[1]]]], dtype=np.float32)
+        base_xy = cv2.perspectiveTransform(pts, self.H)[0][0]
         return Point(x=base_xy[0], y=base_xy[1], z=self.board_z)
 
     def _get_garbage_place(self):

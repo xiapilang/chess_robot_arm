@@ -22,7 +22,7 @@ from sensor_msgs.msg import JointState
 from kortex_driver.msg import BaseCyclic_Feedback
 from std_msgs.msg import String
 from chess_robot_arm.msg import PickAndPlaceGoalInCamera
-from chess_robot_arm.utils.constants import POST_CALIB_HOME, PRE_CALIB_HOME
+from chess_robot_arm.utils.constants import POST_CALIB_HOME, PICK_XY_OFFSET, PLACE_XY_OFFSET, MIN_APPROACH_Z, PICK_TRANSIT, PRE_CALIB_HOME
 
 
 class MotionPlanner:
@@ -79,8 +79,11 @@ class MotionPlanner:
         self.gripper_orient_deg = np.array(rospy.get_param(
             "~gripper_orientation_deg", [0.0, 180.0, 45.0]))
         self.pre_action_lift = rospy.get_param("~pre_action_z_lift", 0.05)
+        self.min_approach_z  = rospy.get_param("~min_approach_z", MIN_APPROACH_Z)
         self.pick_z_offset   = rospy.get_param("~pick_z_offset", 0.005)
         self.place_z_offset  = rospy.get_param("~place_z_offset", 0.01)
+        self.pick_xy_offset  = rospy.get_param("~pick_xy_offset", PICK_XY_OFFSET)
+        self.place_xy_offset = rospy.get_param("~place_xy_offset", PLACE_XY_OFFSET)
         self.gripper_open_val  = rospy.get_param("~gripper_open", 0.66)
         self.gripper_close_val = rospy.get_param("~gripper_close", 0.96)
         self.use_base_frame_coords = rospy.get_param("~use_base_frame_coords", True)
@@ -198,28 +201,38 @@ class MotionPlanner:
         p_base = T_base_cam @ p_cam
         return p_base[:3]
 
-    def _pick_or_place(self, action_name, target_base, z_offset, is_pick):
+    def _pick_or_place(self, action_name, target_base, z_offset, xy_offset, is_pick):
         """
         执行单次抓取或放置动作序列:
 
         步骤:
           1. 移动到目标点上方（预动作位置）
           2. 如果是抓取：张开夹爪
-          3. 下降到精确的目标 Z 位置
+          3. 下降到精确的目标位置（含 XY 微调偏移）
           4. 闭合（抓取）或张开（放置）夹爪
           5. 抬升离开目标点
         """
         rospy.loginfo(f"--- {action_name} 序列开始 ---")
         rx, ry, rz = self.gripper_orient_deg
 
+        target_x = target_base[0] + xy_offset.get("x", 0.0)
+        target_y = target_base[1] + xy_offset.get("y", 0.0)
         target_z = target_base[2] + z_offset
-        above_x, above_y = target_base[0], target_base[1]
-        above_z = target_z + self.pre_action_lift
+        above_z = max(target_z + self.pre_action_lift, self.min_approach_z)
+
+        # 步骤 0: 抓取前先移动到安全中转点，避免碰倒其他棋子
+        if is_pick:
+            rospy.loginfo(f"  步骤0: 移动到棋盘中心安全中转点 "
+                          f"({PICK_TRANSIT['x']:.3f}, {PICK_TRANSIT['y']:.3f}, {PICK_TRANSIT['z']:.3f})")
+            if not self.arm.move_to_cartesian_pose(
+                PICK_TRANSIT["x"], PICK_TRANSIT["y"], PICK_TRANSIT["z"], rx, ry, rz):
+                rospy.logwarn("  移动到中转点失败。")
+                return False
 
         # 步骤 1: 移动到目标点上方
         rospy.loginfo(f"  步骤1: 移动到{action_name}点上方 "
-                      f"({above_x:.3f}, {above_y:.3f}, {above_z:.3f})")
-        if not self.arm.move_to_cartesian_pose(above_x, above_y, above_z, rx, ry, rz):
+                      f"({target_x:.3f}, {target_y:.3f}, {above_z:.3f})")
+        if not self.arm.move_to_cartesian_pose(target_x, target_y, above_z, rx, ry, rz):
             rospy.logwarn(f"  移动到{action_name}点上方失败。")
             return False
 
@@ -229,12 +242,12 @@ class MotionPlanner:
             self.arm.move_gripper(self.gripper_open_val)
             rospy.sleep(0.5)
 
-        # 步骤 3: 下降到精确 Z 位置
-        rospy.loginfo(f"  步骤3: 下降到{action_name} Z "
-                      f"({target_base[0]:.3f}, {target_base[1]:.3f}, {target_z:.3f})")
-        if not self.arm.move_to_cartesian_pose(target_base[0], target_base[1],
+        # 步骤 3: 下降到精确位置（含 XY 偏移）
+        rospy.loginfo(f"  步骤3: 下降到{action_name}位置 "
+                      f"({target_x:.3f}, {target_y:.3f}, {target_z:.3f})")
+        if not self.arm.move_to_cartesian_pose(target_x, target_y,
                                                 target_z, rx, ry, rz):
-            rospy.logwarn(f"  下降到{action_name} Z 失败。")
+            rospy.logwarn(f"  下降到{action_name}位置失败。")
             return False
         rospy.sleep(0.3)
 
@@ -247,8 +260,8 @@ class MotionPlanner:
             rospy.sleep(1.0)
 
         # 步骤 5: 抬升离开
-        rospy.loginfo(f"  步骤5: 抬升 ({above_x:.3f}, {above_y:.3f}, {above_z:.3f})")
-        if not self.arm.move_to_cartesian_pose(above_x, above_y, above_z, rx, ry, rz):
+        rospy.loginfo(f"  步骤5: 抬升 ({target_x:.3f}, {target_y:.3f}, {above_z:.3f})")
+        if not self.arm.move_to_cartesian_pose(target_x, target_y, above_z, rx, ry, rz):
             rospy.logwarn(f"  从{action_name}点抬升失败。")
             return False
 
@@ -332,14 +345,14 @@ class MotionPlanner:
             rospy.loginfo(f"  放置点 (基座标系): {np.round(place_base, 3)}")
 
         # 执行抓取
-        if not self._pick_or_place("抓取", pick_base, self.pick_z_offset, True):
+        if not self._pick_or_place("抓取", pick_base, self.pick_z_offset, self.pick_xy_offset, True):
             rospy.logerr("抓取失败。")
             self._go_post_calib_home()
             self._set_state(self.STATE_IDLE)
             return
 
         # 执行放置
-        if not self._pick_or_place("放置", place_base, self.place_z_offset, False):
+        if not self._pick_or_place("放置", place_base, self.place_z_offset, self.place_xy_offset, False):
             rospy.logerr("放置失败。")
             self._go_post_calib_home()
             self._set_state(self.STATE_IDLE)

@@ -49,6 +49,7 @@ catkin_install_python(PROGRAMS
   main.py
   robot_arm/motion_planner.py
   utils/calibration.py
+  utils/pick_place_calibrate.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

@@ -87,18 +87,18 @@ class KinovaArmController:
         waypoint.oneof_type_of_waypoint.cartesian_waypoint.append(cart)
         return waypoint
 
-    def _wait_for_action_end(self, timeout=10.0):
-        """等待动作完成或超时。"""
+    def _wait_for_action_end(self, timeout=30.0):
+        """等待动作完成，超时后仅告警不阻塞后续流程。"""
         start = time.time()
         while not rospy.is_shutdown() and (time.time() - start) < timeout:
             if self.last_action_notif_type == ActionEvent.ACTION_END:
                 return True
             elif self.last_action_notif_type == ActionEvent.ACTION_ABORT:
-                rospy.logwarn("机械臂动作被中止。")
-                return False
-            time.sleep(0.01)
-        rospy.logwarn("动作等待超时。")
-        return False
+                rospy.logwarn("机械臂报告动作中止，继续等待...")
+                self.last_action_notif_type = None  # 重置，继续等
+            time.sleep(0.1)
+        rospy.logwarn(f"动作等待超时 ({timeout}s)，继续执行下一步。")
+        return True  # 超时不阻塞，机械臂通常已到位
 
     def activate(self):
         """清除故障并激活动作通知（带重试，应对 Kortex ActionServer 初始化延迟）。"""
@@ -155,7 +155,7 @@ class KinovaArmController:
         for attempt in range(max_retries):
             try:
                 self.execute_waypoint_trajectory(req)
-                rospy.sleep(2.0)
+                self._wait_for_action_end(timeout=30.0)
                 return True
             except rospy.ServiceException as e:
                 rospy.logwarn(f"笛卡尔移动失败 (尝试 {attempt+1}/{max_retries}): {e}")

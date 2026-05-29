@@ -39,8 +39,8 @@ class ChessAI:
                 self.engine = chess.engine.SimpleEngine.popen_uci(
                     self.stockfish_path,
                     stderr=subprocess.DEVNULL,
-                    setpgrp=True,
-                    timeout=10.0)
+                    timeout=10.0,
+                    preexec_fn=os.setsid)
                 self.engine.configure({"Skill Level": self.skill_level})
                 print(f"Stockfish 引擎已初始化（难度等级={self.skill_level}）。")
                 return
@@ -168,7 +168,7 @@ def uci_to_matrix_coords(uci_square):
     file_idx = chess.FILE_NAMES.index(uci_square[0])
     rank = int(uci_square[1:])
     row = 8 - rank
-    col = file_idx
+    col = 7 - file_idx   # 翻转: 相机黑方视角, h线在图像左侧
     return (row, col)
 
 
@@ -179,7 +179,7 @@ def matrix_coords_to_uci(row, col):
     示例: (6, 4) → 'e2'
     """
     rank = 8 - row
-    file_char = chess.FILE_NAMES[col]
+    file_char = chess.FILE_NAMES[7 - col]   # 翻转反向
     return f"{file_char}{rank}"
 
 
