@@ -27,9 +27,9 @@ from chess_robot_arm.utils.constants import (
     POST_CALIB_HOME, PICK_XY_OFFSET, PLACE_XY_OFFSET,
     MIN_APPROACH_Z, PICK_TRANSIT, PRE_CALIB_HOME,
     GRIPPER_TILT_THRESHOLD, GRIPPER_MAX_JOINT5_DEG,
-    GRIPPER_FIXED_YAW_DEG, FREE_ROT_DIST_THRESHOLD, FAR_TRANSIT,
+    GRIPPER_FIXED_YAW_DEG, FAR_TRANSIT,
     FAR_PICK_Z_OFFSET, FAR_PLACE_Z_OFFSET, FAR_GRIPPER_CLOSE, FAR_ROW_Z_OFFSET,
-    BOARD_CORNERS_BASE,
+    SPECIAL_Z_OVERRIDE, FAR_CELLS,
 )
 
 
@@ -210,26 +210,20 @@ class MotionPlanner:
         return p_base[:3]
 
     # ROLLBACK_FREE_ROTATION: _compute_gripper_orient 返回 (orient, free_rot)
-    def _compute_gripper_orient(self, x, y):
+    def _compute_gripper_orient(self, x, y, row=None, col=None):
         """计算夹爪姿态及是否为远点。
-
-        返回 (orient, free_rot):
-          free_rot=False → 正常；free_rot=True → 解除旋转限制+远点中转站
-        判断: 第1行/a列(坐标推算) || 距离>阈值
+        判断: 第1行(row=7) / a列(col=7) || 距离>阈值
         """
         dist = math.hypot(x, y)
-        # ROLLBACK_FREE_ROTATION: a列(x>0.52) / 第1行(y近底边) / 距离>阈值
-        # 底边线: y_bottom = 0.314 + (x-0.43)/(0.648-0.43)*(0.062-0.314)
-        y_bottom = 0.314 + (x - 0.430) / 0.218 * (-0.252)
-        is_row1 = abs(y - y_bottom) < 0.04   # 距离底边<4cm
-        is_col_a = x > 0.52                    # a/b 列
-        is_far = is_row1 or is_col_a or dist > FREE_ROT_DIST_THRESHOLD
+        # ROLLBACK_MANUAL_FAR: 手动指定远点，关闭距离阈值
+        is_far = (row is not None and col is not None
+                  and (row, col) in FAR_CELLS)
         if is_far:
             reason = []
             if is_row1: reason.append("第1行")
             if is_col_a: reason.append("a列")
             if dist > FREE_ROT_DIST_THRESHOLD: reason.append(f"dist={dist:.3f}>{FREE_ROT_DIST_THRESHOLD}")
-            rospy.loginfo(f"  远点 ({x:.3f},{y:.3f}) {'+'.join(reason)}, 解除旋转限制+远点中转站")
+            rospy.loginfo(f"  远点 ({x:.3f},{y:.3f}) row={row} col={col}, {'+'.join(reason)}, 远点处理")
             orient = np.array([FAR_TRANSIT["rx"], FAR_TRANSIT["ry"], FAR_TRANSIT["rz"]])
             return orient, True
 
@@ -246,7 +240,8 @@ class MotionPlanner:
         return orient, False
     # END ROLLBACK_FREE_ROTATION
 
-    def _pick_or_place(self, action_name, target_base, z_offset, xy_offset, is_pick):
+    def _pick_or_place(self, action_name, target_base, z_offset, xy_offset, is_pick,
+                        row=None, col=None):
         """
         执行单次抓取或放置动作序列:
 
@@ -264,18 +259,17 @@ class MotionPlanner:
         target_y = target_base[1] + xy_offset.get("y", 0.0)
 
         # ROLLBACK_FREE_ROTATION: 先判断远点，叠加远点 Z 偏移 + 远排 Z 偏移
-        orient, free_rot = self._compute_gripper_orient(target_x, target_y)
-        if free_rot:
+        orient, free_rot = self._compute_gripper_orient(target_x, target_y, row, col)
+        # 特制格子 Z 覆盖所有其他 Z 偏移
+        sp_z = None
+        if row is not None and col is not None:
+            sp_z = SPECIAL_Z_OVERRIDE.get((row, col))
+        if sp_z is not None:
+            far_z = sp_z - z_offset  # 减去全局偏移以完全覆盖
+        elif free_rot:
             far_z = FAR_PICK_Z_OFFSET if is_pick else FAR_PLACE_Z_OFFSET
-            # 反算 target 所在排，若是远排(0/1/2)叠加 FAR_ROW_Z_OFFSET
-            bc = BOARD_CORNERS_BASE
-            u_est = (target_x - bc["top_left"]["x"]) / max(
-                bc["top_right"]["x"] - bc["top_left"]["x"], 0.001)
-            top_y = bc["top_left"]["y"] + u_est * (bc["top_right"]["y"] - bc["top_left"]["y"])
-            bot_y = bc["bottom_left"]["y"] + u_est * (bc["bottom_right"]["y"] - bc["bottom_left"]["y"])
-            v_est = (target_y - top_y) / max(bot_y - top_y, 0.001)
-            est_row = int(round(v_est * 7))
-            far_z += FAR_ROW_Z_OFFSET.get(est_row, 0.0)
+            if row is not None:
+                far_z += FAR_ROW_Z_OFFSET.get(row, 0.0)
         else:
             far_z = 0.0
         # END ROLLBACK_FREE_ROTATION
@@ -402,6 +396,16 @@ class MotionPlanner:
 
         self._set_state(self.STATE_BUSY)
 
+        # 从消息中解析行列号 (格式: "row,col")
+        def _parse_rc(s):
+            try:
+                parts = s.split(",")
+                return int(parts[0]), int(parts[1])
+            except Exception:
+                return None, None
+        pick_row, pick_col = _parse_rc(msg.object_id_at_pick)
+        place_row, place_col = _parse_rc(msg.target_location_id_at_place)
+
         rospy.loginfo(f"收到目标: 抓取 '{msg.object_id_at_pick}' "
                       f"-> 放置 '{msg.target_location_id_at_place}'")
 
@@ -429,14 +433,16 @@ class MotionPlanner:
             rospy.loginfo(f"  放置点 (基座标系): {np.round(place_base, 3)}")
 
         # 执行抓取
-        if not self._pick_or_place("抓取", pick_base, self.pick_z_offset, self.pick_xy_offset, True):
+        if not self._pick_or_place("抓取", pick_base, self.pick_z_offset, self.pick_xy_offset, True,
+                                    pick_row, pick_col):
             rospy.logerr("抓取失败。")
             self._go_post_calib_home()
             self._set_state(self.STATE_IDLE)
             return
 
         # 执行放置
-        if not self._pick_or_place("放置", place_base, self.place_z_offset, self.place_xy_offset, False):
+        if not self._pick_or_place("放置", place_base, self.place_z_offset, self.place_xy_offset, False,
+                                    place_row, place_col):
             rospy.logerr("放置失败。")
             self._go_post_calib_home()
             self._set_state(self.STATE_IDLE)

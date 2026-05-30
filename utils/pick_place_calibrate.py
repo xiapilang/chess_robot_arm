@@ -45,8 +45,8 @@ from chess_robot_arm.utils.constants import (
     PRE_ACTION_Z_LIFT, ROW_PICK_OFFSETS, ROW_PLACE_OFFSETS,
     COL_PICK_OFFSETS, COL_PLACE_OFFSETS, ROW_Z_OFFSET,
     GRIPPER_TILT_THRESHOLD, GRIPPER_MAX_JOINT5_DEG, GRIPPER_FIXED_YAW_DEG,
-    FREE_ROT_DIST_THRESHOLD, FAR_TRANSIT, FAR_PICK_Z_OFFSET, FAR_PLACE_Z_OFFSET,
-    FAR_GRIPPER_CLOSE, FAR_ROW_Z_OFFSET,
+    FAR_TRANSIT, FAR_PICK_Z_OFFSET, FAR_PLACE_Z_OFFSET,
+    FAR_GRIPPER_CLOSE, FAR_ROW_Z_OFFSET, SPECIAL_Z_OVERRIDE, FAR_CELLS,
     GRIPPER_OPEN_VALUE, GRIPPER_CLOSE_VALUE,
     DEFAULT_GRIPPER_ORIENTATION_DEG,
 )
@@ -54,8 +54,8 @@ from chess_robot_arm.utils.constants import (
 # ============================================================
 # 校准配置
 # ============================================================
-SRC_SQUARE = "a4"       # 从哪个格子抓取棋子
-DST_SQUARE = "a6"       # 放置到哪个格子
+SRC_SQUARE = "f1"       # 从哪个格子抓取棋子
+DST_SQUARE = "b3"       # 放置到哪个格子
 
 # 夹爪姿态
 GRIPPER_RX, GRIPPER_RY, GRIPPER_RZ = DEFAULT_GRIPPER_ORIENTATION_DEG
@@ -102,13 +102,13 @@ def matrix_to_base_point_homography(col, row, cam_corners, H, board_z):
 # 抓取-放置逻辑
 # ============================================================
 
-# ROLLBACK_FREE_ROTATION: compute_gripper_orient 返回 (orient, free_rot)
+# ROLLBACK_MANUAL_FAR: compute_gripper_orient 返回 (orient, free_rot)
 def compute_gripper_orient(x, y, default_orient, force_far=False):
-    """计算夹爪姿态。force_far 或超出阈值时解除旋转限制+使用远点中转站。"""
+    """远点由 FAR_CELLS 手动指定，不再用距离阈值。"""
     dist = math.hypot(x, y)
-    # ROLLBACK_FREE_ROTATION: 1行/a列强制远点，或超出阈值
-    if force_far or dist > FREE_ROT_DIST_THRESHOLD:
-        rospy.loginfo(f"  远点 ({x:.3f},{y:.3f}) dist={dist:.3f}, 解除旋转限制+远点中转站")
+    # ROLLBACK_MANUAL_FAR: 仅 force_far 触发远点
+    if force_far:
+        rospy.loginfo(f"  远点 ({x:.3f},{y:.3f}), 解除旋转限制+远点中转站")
         orient = np.array([FAR_TRANSIT["rx"], FAR_TRANSIT["ry"], FAR_TRANSIT["rz"]])
         return orient, True
 
@@ -118,7 +118,7 @@ def compute_gripper_orient(x, y, default_orient, force_far=False):
         tilt = min((dist - GRIPPER_TILT_THRESHOLD) / 0.25 * GRIPPER_MAX_JOINT5_DEG,
                    GRIPPER_MAX_JOINT5_DEG)
     return np.array([0.0, 180.0 - tilt, GRIPPER_FIXED_YAW_DEG]), False
-# END ROLLBACK_FREE_ROTATION
+# END ROLLBACK_MANUAL_FAR
 
 
 def pick_and_place(arm, src_uci, dst_uci, to_base_func):
@@ -141,23 +141,32 @@ def pick_and_place(arm, src_uci, dst_uci, to_base_func):
     place_row_off = ROW_PLACE_OFFSETS.get(d_row, {"x": 0.0, "y": 0.0})
     place_col_off = COL_PLACE_OFFSETS.get(d_col, {"x": 0.0, "y": 0.0})
 
-    # ROLLBACK_FREE_ROTATION: 第1行(row=7) / a列(col=7) 直接视为远点，其余按阈值判断
-    pick_dist = math.hypot(s_x, s_y)
-    place_dist = math.hypot(d_x, d_y)
-    pick_is_far = (s_row == 7 or s_col == 7) or (pick_dist > FREE_ROT_DIST_THRESHOLD)
-    place_is_far = (d_row == 7 or d_col == 7) or (place_dist > FREE_ROT_DIST_THRESHOLD)
+    # ROLLBACK_MANUAL_FAR: 手动指定远点，关闭距离阈值
+    pick_is_far = (s_row, s_col) in FAR_CELLS
+    place_is_far = (d_row, d_col) in FAR_CELLS
 
     pick_x = s_x + PICK_XY_OFFSET["x"] + pick_row_off["x"] + pick_col_off["x"]
     pick_y = s_y + PICK_XY_OFFSET["y"] + pick_row_off["y"] + pick_col_off["y"]
-    pick_z = s_z + ROW_Z_OFFSET.get(s_row, PICK_Z_OFFSET) \
-             + (FAR_PICK_Z_OFFSET if pick_is_far else 0.0) \
-             + (FAR_ROW_Z_OFFSET.get(s_row, 0.0) if pick_is_far else 0.0)
+    # 特制格子 Z 偏移覆盖所有其他 Z 偏移
+    sp_z_pick = SPECIAL_Z_OVERRIDE.get((s_row, s_col))
+    sp_z_place = SPECIAL_Z_OVERRIDE.get((d_row, d_col))
+    if sp_z_pick is not None:
+        rospy.loginfo(f"  特制Z覆盖 抓取({s_row},{s_col}): {sp_z_pick}")
+        pick_z = s_z + sp_z_pick
+    else:
+        pick_z = s_z + ROW_Z_OFFSET.get(s_row, PICK_Z_OFFSET) \
+                 + (FAR_PICK_Z_OFFSET if pick_is_far else 0.0) \
+                 + (FAR_ROW_Z_OFFSET.get(s_row, 0.0) if pick_is_far else 0.0)
 
     place_x = d_x + PLACE_XY_OFFSET["x"] + place_row_off["x"] + place_col_off["x"]
     place_y = d_y + PLACE_XY_OFFSET["y"] + place_row_off["y"] + place_col_off["y"]
-    place_z = d_z + ROW_Z_OFFSET.get(d_row, PLACE_Z_OFFSET) \
-              + (FAR_PLACE_Z_OFFSET if place_is_far else 0.0) \
-              + (FAR_ROW_Z_OFFSET.get(d_row, 0.0) if place_is_far else 0.0)
+    if sp_z_place is not None:
+        rospy.loginfo(f"  特制Z覆盖 放置({d_row},{d_col}): {sp_z_place}")
+        place_z = d_z + sp_z_place
+    else:
+        place_z = d_z + ROW_Z_OFFSET.get(d_row, PLACE_Z_OFFSET) \
+                  + (FAR_PLACE_Z_OFFSET if place_is_far else 0.0) \
+                  + (FAR_ROW_Z_OFFSET.get(d_row, 0.0) if place_is_far else 0.0)
     # END ROLLBACK_FREE_ROTATION
 
     rospy.loginfo(f"抓取 {src_uci}: matrix({s_row},{s_col}) → base({s_x:.3f},{s_y:.3f},{s_z:.3f})")

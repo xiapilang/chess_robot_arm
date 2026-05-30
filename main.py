@@ -33,6 +33,7 @@ from chess_robot_arm.utils.constants import (
     BOARD_ROWS, BOARD_COLS, EMPTY_SQUARE, BOARD_CORNERS_BASE,
     ROW_PICK_OFFSETS, ROW_PLACE_OFFSETS,
     COL_PICK_OFFSETS, COL_PLACE_OFFSETS, ROW_Z_OFFSET,
+    GARBAGE_POINT, GARBAGE_STEP,
 )
 
 
@@ -99,20 +100,11 @@ class TerminalChessOrchestrator:
     # ------------------------------------------------------------------
 
     def _init_garbage_zone(self):
-        """从基座标系棋盘角点计算弃子区参考位置。"""
-        tl = self.base_corners[0]  # top_left
-        tr = self.base_corners[1]  # top_right
-        br = self.base_corners[3]  # bottom_right
-
-        self.garbage_point = Point()
-        self.garbage_point.x = 2 * tr[0] - tl[0]
-        self.garbage_point.y = 2 * tr[1] - tl[1]
-        self.garbage_point.z = self.board_z
-
-        self.garbage_offset = Point()
-        self.garbage_offset.x = (tr[0] - br[0]) / 8
-        self.garbage_offset.y = (tr[1] - br[1]) / 8
-        self.garbage_offset.z = 0.0
+        """弃子区参考位置（从 constants 读取）。"""
+        self.garbage_point = Point(
+            x=GARBAGE_POINT["x"], y=GARBAGE_POINT["y"], z=GARBAGE_POINT["z"])
+        self.garbage_offset = Point(
+            x=GARBAGE_STEP["x"], y=GARBAGE_STEP["y"], z=GARBAGE_STEP["z"])
 
     # ------------------------------------------------------------------
     # ROS 回调
@@ -190,16 +182,16 @@ class TerminalChessOrchestrator:
     def _get_garbage_place(self):
         """计算弃子区中下一个棋子的放置位置。"""
         gp = Point()
-        gp.x = self.garbage_point.x - self.garbage_offset.x * self.eat_count
-        gp.y = self.garbage_point.y - self.garbage_offset.y * self.eat_count
-        gp.z = self.garbage_point.z - self.garbage_offset.z * self.eat_count
+        gp.x = self.garbage_point.x + self.garbage_offset.x * self.eat_count
+        gp.y = self.garbage_point.y + self.garbage_offset.y * self.eat_count
+        gp.z = self.garbage_point.z + self.garbage_offset.z * self.eat_count
         return gp
 
     # ------------------------------------------------------------------
     # 机械臂指令
     # ------------------------------------------------------------------
 
-    def _wait_for_arm_idle(self, timeout=150):
+    def _wait_for_arm_idle(self, timeout=3000):
         t = 0
         while self.arm_status != '0' and t < timeout:
             self.rate.sleep()
@@ -220,6 +212,7 @@ class TerminalChessOrchestrator:
 
             self.eat_count += 1
             msg_eat = PickAndPlaceGoalInCamera()
+            msg_eat.object_id_at_pick = f"{captured_row},{captured_col}"
             msg_eat.pick_position_in_camera = self._pick_point(
                 captured_col, captured_row)
             msg_eat.place_position_in_camera = self._get_garbage_place()
@@ -233,8 +226,10 @@ class TerminalChessOrchestrator:
             return False
 
         msg_move = PickAndPlaceGoalInCamera()
+        msg_move.object_id_at_pick = f"{from_row},{from_col}"
         msg_move.pick_position_in_camera = self._pick_point(
             from_col, from_row)
+        msg_move.target_location_id_at_place = f"{to_row},{to_col}"
         msg_move.place_position_in_camera = self._place_point(
             to_col, to_row)
         self.goal_pub.publish(msg_move)
@@ -250,8 +245,10 @@ class TerminalChessOrchestrator:
             rook_row = from_row
             rook_from, rook_to = (7, 5) if to_col > from_col else (0, 3)
             msg_rook = PickAndPlaceGoalInCamera()
+            msg_rook.object_id_at_pick = f"{rook_row},{rook_from}"
             msg_rook.pick_position_in_camera = self._pick_point(
                 rook_from, rook_row)
+            msg_rook.target_location_id_at_place = f"{rook_row},{rook_to}"
             msg_rook.place_position_in_camera = self._place_point(
                 rook_to, rook_row)
             self.goal_pub.publish(msg_rook)

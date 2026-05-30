@@ -143,16 +143,34 @@ ROW_PLACE_OFFSETS = {
 # --- 远点特殊处理 ---
 GRIPPER_TILT_THRESHOLD = 0.48   # 开始倾斜的距离阈值(m)
 GRIPPER_MAX_JOINT5_DEG = 30.0   # 第5关节最大旋转角度(度)
-# ROLLBACK_FREE_ROTATION: 超出此距离(m)的格子使用特殊中转点并解除旋转限制
-FREE_ROT_DIST_THRESHOLD = 0.48  # 触发远点特殊处理的阈值(m)
 # ROLLBACK_FREE_ROTATION: 远点专用中转点，替换默认 PICK_TRANSIT
 FAR_TRANSIT = {"x": 0.531, "y": 0.079, "z": 0.085,
                "rx": 26.097, "ry": 177.116, "rz": 80.475}
 # ROLLBACK_FREE_ROTATION: 远点抓取/放置 Z 轴额外偏移
 FAR_PICK_Z_OFFSET  = 0.001   # 远点抓取 Z 偏移
-FAR_PLACE_Z_OFFSET = 0.005   # 远点放置 Z 偏移
+FAR_PLACE_Z_OFFSET = 0.003   # 远点放置 Z 偏移
 # ROLLBACK_FREE_ROTATION: 远点夹爪闭合度（值越大闭合越紧）
 FAR_GRIPPER_CLOSE  = 0.85    # 远点抓取闭合
+# ROLLBACK_MANUAL_FAR: 手动指定远点格子 (row, col)，关闭距离阈值判断
+FAR_CELLS = {
+    (7, 0), (7, 1), (7, 2), (7, 3), (7, 4), (7, 5), (7, 6), (7, 7),  # 第1行 a1..h1
+    (6, 7), (5, 7), (4, 7), (3, 7), (6, 6), (6, 5), (5, 6)                                  # a2..a5 b2..b5 c3..c5
+}
+# 特制格子 Z 偏移: a/b列 + 1/2/3行 6 个格子，覆盖所有其他 Z 偏移
+SPECIAL_Z_OVERRIDE = {
+    (7, 7): 0.009,  # a1
+    (6, 7): 0.009,  # a2
+    (5, 7): 0.009,  # a3
+    (7, 6): 0.009,  # b1
+    (6, 6): 0.005,  # b2
+    (5, 6): 0.005,  # b3
+    (5, 5): 0.003,  # c3
+    (6, 5): 0.005,  # c2
+    (6, 4): 0.005,  # d2
+    (4, 7): 0.006,  # a4
+    (7, 5): 0.006,  # c1
+    (7, 4): 0.006,  # d1
+}
 # 夹爪偏航角（第6关节），离开 home 后所有移动统一使用此角度
 GRIPPER_FIXED_YAW_DEG  = 90.0    # 固定偏航角(度)
 
@@ -203,8 +221,9 @@ CAMERA_HEIGHT = 720
 CAMERA_FPS    = 30
 
 # --- 被吃棋子放置参数 ---
-# 被吃掉的棋子放置在棋盘右侧的弃子区
-GARBAGE_OFFSET_FACTOR = 2.0       # 从左上角指向右上角向量的倍数
+# 被吃掉的棋子放置在弃子区（棋盘外侧，手动指定以确保可达）
+GARBAGE_POINT = {"x": 0.301, "y": 0.266, "z": -0.011}  # 弃子区原点
+GARBAGE_STEP  = {"x": -0.04, "y": -0.04, "z": 0.0}      # 每个被吃棋子的堆叠步长
 
 # --- AI 参数 ---
 STOCKFISH_PATH = "/usr/games/stockfish"   # Stockfish 引擎路径
