@@ -211,19 +211,13 @@ class MotionPlanner:
 
     # ROLLBACK_FREE_ROTATION: _compute_gripper_orient 返回 (orient, free_rot)
     def _compute_gripper_orient(self, x, y, row=None, col=None):
-        """计算夹爪姿态及是否为远点。
-        判断: 第1行(row=7) / a列(col=7) || 距离>阈值
-        """
+        """计算夹爪姿态及是否为远点。判断: (row,col) in FAR_CELLS。"""
         dist = math.hypot(x, y)
         # ROLLBACK_MANUAL_FAR: 手动指定远点，关闭距离阈值
         is_far = (row is not None and col is not None
                   and (row, col) in FAR_CELLS)
         if is_far:
-            reason = []
-            if is_row1: reason.append("第1行")
-            if is_col_a: reason.append("a列")
-            if dist > FREE_ROT_DIST_THRESHOLD: reason.append(f"dist={dist:.3f}>{FREE_ROT_DIST_THRESHOLD}")
-            rospy.loginfo(f"  远点 ({x:.3f},{y:.3f}) row={row} col={col}, {'+'.join(reason)}, 远点处理")
+            rospy.loginfo(f"  远点 ({x:.3f},{y:.3f}) row={row} col={col}, 远点处理")
             orient = np.array([FAR_TRANSIT["rx"], FAR_TRANSIT["ry"], FAR_TRANSIT["rz"]])
             return orient, True
 

@@ -243,7 +243,7 @@ class TerminalChessOrchestrator:
             if not self._wait_for_arm_idle():
                 return False
             rook_row = from_row
-            rook_from, rook_to = (7, 5) if to_col > from_col else (0, 3)
+            rook_from, rook_to = (0, 2) if to_col < from_col else (7, 5)  # 列翻转: col减小=短易位
             msg_rook = PickAndPlaceGoalInCamera()
             msg_rook.object_id_at_pick = f"{rook_row},{rook_from}"
             msg_rook.pick_position_in_camera = self._pick_point(

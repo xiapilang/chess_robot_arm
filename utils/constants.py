@@ -223,7 +223,7 @@ CAMERA_FPS    = 30
 # --- 被吃棋子放置参数 ---
 # 被吃掉的棋子放置在弃子区（棋盘外侧，手动指定以确保可达）
 GARBAGE_POINT = {"x": 0.301, "y": 0.266, "z": -0.011}  # 弃子区原点
-GARBAGE_STEP  = {"x": -0.04, "y": -0.04, "z": 0.0}      # 每个被吃棋子的堆叠步长
+GARBAGE_STEP  = {"x": -0.01, "y": -0.01, "z": 0.0}      # 每个被吃棋子的堆叠步长
 
 # --- AI 参数 ---
 STOCKFISH_PATH = "/usr/games/stockfish"   # Stockfish 引擎路径
