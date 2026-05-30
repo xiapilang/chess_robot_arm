@@ -31,6 +31,8 @@ from chess_robot_arm.chess_engine.ai_player import (
 from chess_robot_arm.chess_engine.game_state import GameState
 from chess_robot_arm.utils.constants import (
     BOARD_ROWS, BOARD_COLS, EMPTY_SQUARE, BOARD_CORNERS_BASE,
+    ROW_PICK_OFFSETS, ROW_PLACE_OFFSETS,
+    COL_PICK_OFFSETS, COL_PLACE_OFFSETS, ROW_Z_OFFSET,
 )
 
 
@@ -167,6 +169,24 @@ class TerminalChessOrchestrator:
         base_xy = cv2.perspectiveTransform(pts, self.H)[0][0]
         return Point(x=base_xy[0], y=base_xy[1], z=self.board_z)
 
+    def _pick_point(self, col, row):
+        """抓取点：叠加逐排 + 逐列偏移（含 Z）。"""
+        pt = self._matrix_to_base_point(col, row)
+        row_off = ROW_PICK_OFFSETS.get(row, {"x": 0.0, "y": 0.0})
+        col_off = COL_PICK_OFFSETS.get(col, {"x": 0.0, "y": 0.0})
+        z = pt.z + ROW_Z_OFFSET.get(row, 0.0)
+        return Point(x=pt.x + row_off["x"] + col_off["x"],
+                     y=pt.y + row_off["y"] + col_off["y"], z=z)
+
+    def _place_point(self, col, row):
+        """放置点：叠加逐排 + 逐列偏移（含 Z）。"""
+        pt = self._matrix_to_base_point(col, row)
+        row_off = ROW_PLACE_OFFSETS.get(row, {"x": 0.0, "y": 0.0})
+        col_off = COL_PLACE_OFFSETS.get(col, {"x": 0.0, "y": 0.0})
+        z = pt.z + ROW_Z_OFFSET.get(row, 0.0)
+        return Point(x=pt.x + row_off["x"] + col_off["x"],
+                     y=pt.y + row_off["y"] + col_off["y"], z=z)
+
     def _get_garbage_place(self):
         """计算弃子区中下一个棋子的放置位置。"""
         gp = Point()
@@ -200,7 +220,7 @@ class TerminalChessOrchestrator:
 
             self.eat_count += 1
             msg_eat = PickAndPlaceGoalInCamera()
-            msg_eat.pick_position_in_camera = self._matrix_to_base_point(
+            msg_eat.pick_position_in_camera = self._pick_point(
                 captured_col, captured_row)
             msg_eat.place_position_in_camera = self._get_garbage_place()
             self.goal_pub.publish(msg_eat)
@@ -213,9 +233,9 @@ class TerminalChessOrchestrator:
             return False
 
         msg_move = PickAndPlaceGoalInCamera()
-        msg_move.pick_position_in_camera = self._matrix_to_base_point(
+        msg_move.pick_position_in_camera = self._pick_point(
             from_col, from_row)
-        msg_move.place_position_in_camera = self._matrix_to_base_point(
+        msg_move.place_position_in_camera = self._place_point(
             to_col, to_row)
         self.goal_pub.publish(msg_move)
         self.eat_status_pub.publish(String("IDLE"))
@@ -230,9 +250,9 @@ class TerminalChessOrchestrator:
             rook_row = from_row
             rook_from, rook_to = (7, 5) if to_col > from_col else (0, 3)
             msg_rook = PickAndPlaceGoalInCamera()
-            msg_rook.pick_position_in_camera = self._matrix_to_base_point(
+            msg_rook.pick_position_in_camera = self._pick_point(
                 rook_from, rook_row)
-            msg_rook.place_position_in_camera = self._matrix_to_base_point(
+            msg_rook.place_position_in_camera = self._place_point(
                 rook_to, rook_row)
             self.goal_pub.publish(msg_rook)
 

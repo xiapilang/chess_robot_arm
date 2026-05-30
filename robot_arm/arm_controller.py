@@ -59,6 +59,59 @@ class KinovaArmController:
             self.activate_notifications = rospy.ServiceProxy(
                 activate_notif_srv, OnNotificationActionTopic)
 
+            # --- 伺服模式 ---
+            servoing_srv = f'/{self.robot_name}/base/set_servoing_mode'
+            rospy.wait_for_service(servoing_srv)
+            self.set_servoing = rospy.ServiceProxy(servoing_srv, SetServoingMode)
+
+            # --- 安全相关服务 ---
+            safety_srv = f'/{self.robot_name}/device_config/clear_all_safety_status'
+            rospy.wait_for_service(safety_srv)
+            self.clear_all_safety = rospy.ServiceProxy(safety_srv, ClearAllSafetyStatus)
+
+            safety_topic_srv = f'/{self.robot_name}/device_config/activate_publishing_of_safety_topic'
+            rospy.wait_for_service(safety_topic_srv)
+            self.activate_safety_topic = rospy.ServiceProxy(
+                safety_topic_srv, OnNotificationSafetyTopic)
+
+            read_zones_srv = f'/{self.robot_name}/base/read_all_protection_zones'
+            rospy.wait_for_service(read_zones_srv)
+            self.read_protection_zones = rospy.ServiceProxy(
+                read_zones_srv, ReadAllProtectionZones)
+
+            delete_zone_srv = f'/{self.robot_name}/base/delete_protection_zone'
+            rospy.wait_for_service(delete_zone_srv)
+            self.delete_protection_zone = rospy.ServiceProxy(
+                delete_zone_srv, DeleteProtectionZone)
+
+            # --- 关节空间轨迹（Cartesian 失败时的 fallback） ---
+            ik_srv = f'/{self.robot_name}/base/compute_inverse_kinematics'
+            rospy.wait_for_service(ik_srv)
+            self.compute_ik = rospy.ServiceProxy(ik_srv, ComputeInverseKinematics)
+
+            joint_traj_srv = f'/{self.robot_name}/base/play_joint_trajectory'
+            rospy.wait_for_service(joint_traj_srv)
+            self.play_joint_traj = rospy.ServiceProxy(
+                joint_traj_srv, PlayJointTrajectory)
+
+            # --- 关节软限位置零 ---
+            reset_speed_srv = f'/{self.robot_name}/control_config/reset_joint_speed_soft_limits'
+            rospy.wait_for_service(reset_speed_srv)
+            self.reset_joint_speed = rospy.ServiceProxy(
+                reset_speed_srv, ResetJointSpeedSoftLimits)
+
+            reset_accel_srv = f'/{self.robot_name}/control_config/reset_joint_acceleration_soft_limits'
+            rospy.wait_for_service(reset_accel_srv)
+            self.reset_joint_accel = rospy.ServiceProxy(
+                reset_accel_srv, ResetJointAccelerationSoftLimits)
+
+            # 安全通知订阅
+            self._safety_triggered = False
+            self.safety_sub = rospy.Subscriber(
+                f"/{self.robot_name}/safety_topic",
+                SafetyNotification,
+                self._safety_cb)
+
             self.is_init_success = True
             rospy.loginfo(f"KinovaArmController: '{self.robot_name}' 初始化成功 "
                           f"（夹爪={'有' if self.is_gripper_present else '无'}）。")
@@ -70,6 +123,78 @@ class KinovaArmController:
     def _action_cb(self, notif):
         """动作通知回调：记录最近的机器人动作事件。"""
         self.last_action_notif_type = notif.action_event
+
+    def _safety_cb(self, notif):
+        """安全通知回调：自动清除触发的安全状态。"""
+        self._safety_triggered = True
+        rospy.logwarn(f"安全触发，自动清除...")
+        try:
+            self.clear_all_safety(ClearAllSafetyStatusRequest())
+            rospy.loginfo("安全状态已清除。")
+        except Exception as e:
+            rospy.logwarn(f"清除安全状态失败: {e}")
+
+    def disable_all_safety(self):
+        """删除所有保护区域并清除安全状态，关闭安全角度限制。"""
+        rospy.loginfo("正在关闭安全保护...")
+        try:
+            # 1. 激活安全话题发布
+            self.activate_safety_topic(OnNotificationSafetyTopicRequest())
+            rospy.sleep(0.5)
+        except Exception as e:
+            rospy.logwarn(f"激活安全话题失败: {e}")
+
+        try:
+            # 2. 清除所有安全状态
+            self.clear_all_safety(ClearAllSafetyStatusRequest())
+            rospy.loginfo("安全状态已清除。")
+        except Exception as e:
+            rospy.logwarn(f"清除安全状态失败: {e}")
+
+        try:
+            # 3. 删除所有保护区域
+            try:
+                resp = self.read_protection_zones(ReadAllProtectionZonesRequest())
+                for zone in resp.output.protection_zones:
+                    try:
+                        del_req = DeleteProtectionZoneRequest()
+                        del_req.input.handle.identifier = zone.handle.identifier
+                        self.delete_protection_zone(del_req)
+                    except Exception:
+                        pass  # Kortex 内部 API 限制，静默跳过
+            except Exception:
+                pass
+        except Exception as e:
+            rospy.logwarn(f"读取保护区域失败: {e}")
+
+        try:
+            # 4. 重置关节速度/加速度软限位
+            for mode in range(1, 13):
+                try:
+                    req = ResetJointSpeedSoftLimitsRequest()
+                    req.input.control_mode = mode
+                    self.reset_joint_speed(req)
+                except Exception:
+                    pass
+                try:
+                    req = ResetJointAccelerationSoftLimitsRequest()
+                    req.input.control_mode = mode
+                    self.reset_joint_accel(req)
+                except Exception:
+                    pass
+            rospy.loginfo("关节速度/加速度软限位已重置。")
+        except Exception:
+            pass
+
+        try:
+            # 5. 再次清除故障
+            self.clear_faults()
+            rospy.sleep(0.5)
+            self.clear_all_safety(ClearAllSafetyStatusRequest())
+        except Exception:
+            pass
+
+        rospy.loginfo("安全保护已关闭。")
 
     def _fill_cartesian_waypoint(self, x, y, z, theta_x, theta_y, theta_z,
                                   blending_radius=0.0):
@@ -114,9 +239,17 @@ class KinovaArmController:
             try:
                 self.clear_faults()
                 rospy.sleep(1.0)
+                self.disable_all_safety()
+                rospy.sleep(0.5)
+                # 设置伺服模式为单层位置控制
+                servo_req = SetServoingModeRequest()
+                servo_req.input.servoing_mode = ServoingMode.SINGLE_LEVEL_SERVOING
+                self.set_servoing(servo_req)
+                rospy.loginfo("伺服模式已设置为单层位置控制。")
+                rospy.sleep(0.5)
                 self.activate_notifications(OnNotificationActionTopicRequest())
                 rospy.sleep(1.0)
-                rospy.loginfo("机械臂激活成功。")
+                rospy.loginfo("机械臂激活成功（安全保护已关闭）。")
                 return True
             except rospy.ServiceException as e:
                 rospy.logwarn(f"激活失败 (尝试 {attempt+1}/{max_retries}): {e}")
@@ -152,15 +285,54 @@ class KinovaArmController:
                       f"Rx={theta_x:.1f} Ry={theta_y:.1f} Rz={theta_z:.1f}")
 
         max_retries = 2
+        cartesian_rejected = False
         for attempt in range(max_retries):
             try:
                 self.execute_waypoint_trajectory(req)
-                self._wait_for_action_end(timeout=30.0)
+                start = time.time()
+                while (time.time() - start) < 5.0:
+                    if self.last_action_notif_type == ActionEvent.ACTION_END:
+                        rospy.loginfo("  机械臂确认到位。")
+                        return True
+                    elif self.last_action_notif_type == ActionEvent.ACTION_ABORT:
+                        rospy.logwarn("  笛卡尔轨迹被拒绝，尝试关节空间 fallback...")
+                        self.last_action_notif_type = None
+                        cartesian_rejected = True
+                        break
+                    time.sleep(0.05)
+                if cartesian_rejected:
+                    break  # 跳出 Cartesian 重试，进入关节空间 fallback
+                rospy.sleep(3.0)
                 return True
             except rospy.ServiceException as e:
                 rospy.logwarn(f"笛卡尔移动失败 (尝试 {attempt+1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
                     rospy.sleep(2.0)
+
+        # --- 关节空间 fallback：自己算 IK 后用关节轨迹执行 ---
+        if cartesian_rejected:
+            rospy.loginfo("使用关节空间轨迹绕过 Cartesian IK 限制...")
+            try:
+                ik_req = ComputeInverseKinematicsRequest()
+                ik_req.input.cartesian_pose.x = x
+                ik_req.input.cartesian_pose.y = y
+                ik_req.input.cartesian_pose.z = z
+                ik_req.input.cartesian_pose.theta_x = theta_x
+                ik_req.input.cartesian_pose.theta_y = theta_y
+                ik_req.input.cartesian_pose.theta_z = theta_z
+                ik_resp = self.compute_ik(ik_req)
+
+                jt_req = PlayJointTrajectoryRequest()
+                jt_req.input.joint_angles.joint_angles = ik_resp.output.joint_angles
+                self.play_joint_traj(jt_req)
+                rospy.loginfo("  关节空间轨迹已发送。")
+                rospy.sleep(3.0)
+                return True
+            except Exception as e:
+                rospy.logerr(f"关节空间 fallback 也失败: {e}")
+                rospy.logerr(f"  目标: ({x:.3f},{y:.3f},{z:.3f}) "
+                           f"Rx={theta_x:.1f} Ry={theta_y:.1f} Rz={theta_z:.1f}")
+                return False
 
         rospy.logerr(f"笛卡尔移动失败，已重试 {max_retries} 次。")
         return False

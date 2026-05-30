@@ -15,6 +15,7 @@ ROS 节点：订阅 /kinova_pick_place/goal_in_camera 话题，
 """
 
 import rospy
+import math
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 from geometry_msgs.msg import Point
@@ -22,7 +23,11 @@ from sensor_msgs.msg import JointState
 from kortex_driver.msg import BaseCyclic_Feedback
 from std_msgs.msg import String
 from chess_robot_arm.msg import PickAndPlaceGoalInCamera
-from chess_robot_arm.utils.constants import POST_CALIB_HOME, PICK_XY_OFFSET, PLACE_XY_OFFSET, MIN_APPROACH_Z, PICK_TRANSIT, PRE_CALIB_HOME
+from chess_robot_arm.utils.constants import (
+    POST_CALIB_HOME, PICK_XY_OFFSET, PLACE_XY_OFFSET,
+    MIN_APPROACH_Z, PICK_TRANSIT, PRE_CALIB_HOME,
+    GRIPPER_TILT_THRESHOLD, GRIPPER_MAX_TILT_DEG,
+)
 
 
 class MotionPlanner:
@@ -201,6 +206,24 @@ class MotionPlanner:
         p_base = T_base_cam @ p_cam
         return p_base[:3]
 
+    def _compute_gripper_orient(self, x, y):
+        """根据目标基座标位置计算夹爪姿态。
+
+        距基座 ≤GRIPPER_TILT_THRESHOLD 保持垂直；
+        超出后 yaw 指向目标方向 + pitch 前倾，不超过 GRIPPER_MAX_TILT_DEG。
+        """
+        dist = math.hypot(x, y)
+        if dist <= GRIPPER_TILT_THRESHOLD:
+            return self.gripper_orient_deg
+
+        tilt_deg = min((dist - GRIPPER_TILT_THRESHOLD) / 0.25 * GRIPPER_MAX_TILT_DEG,
+                       GRIPPER_MAX_TILT_DEG)
+        target_yaw = math.degrees(math.atan2(y, x))
+        orient = np.array([0.0, 180.0 - tilt_deg, target_yaw])
+        rospy.loginfo(f"  远点 ({x:.3f},{y:.3f}) 距离={dist:.3f}m, "
+                      f"倾斜={tilt_deg:.1f}° yaw={target_yaw:.1f}°")
+        return orient
+
     def _pick_or_place(self, action_name, target_base, z_offset, xy_offset, is_pick):
         """
         执行单次抓取或放置动作序列:
@@ -213,26 +236,30 @@ class MotionPlanner:
           5. 抬升离开目标点
         """
         rospy.loginfo(f"--- {action_name} 序列开始 ---")
-        rx, ry, rz = self.gripper_orient_deg
+        drx, dry, drz = self.gripper_orient_deg  # 中转点/默认姿态
 
         target_x = target_base[0] + xy_offset.get("x", 0.0)
         target_y = target_base[1] + xy_offset.get("y", 0.0)
         target_z = target_base[2] + z_offset
         above_z = max(target_z + self.pre_action_lift, self.min_approach_z)
 
-        # 步骤 0: 抓取前先移动到安全中转点，避免碰倒其他棋子
+        # 根据目标位置计算夹爪姿态（远点自动倾斜）
+        orient = self._compute_gripper_orient(target_x, target_y)
+        trx, try_, trz = orient
+
+        # 步骤 0: 抓取前先移动到安全中转点（始终用默认垂直姿态）
         if is_pick:
             rospy.loginfo(f"  步骤0: 移动到棋盘中心安全中转点 "
                           f"({PICK_TRANSIT['x']:.3f}, {PICK_TRANSIT['y']:.3f}, {PICK_TRANSIT['z']:.3f})")
             if not self.arm.move_to_cartesian_pose(
-                PICK_TRANSIT["x"], PICK_TRANSIT["y"], PICK_TRANSIT["z"], rx, ry, rz):
+                PICK_TRANSIT["x"], PICK_TRANSIT["y"], PICK_TRANSIT["z"], drx, dry, drz):
                 rospy.logwarn("  移动到中转点失败。")
                 return False
 
-        # 步骤 1: 移动到目标点上方
+        # 步骤 1: 移动到目标点上方（使用计算后的姿态）
         rospy.loginfo(f"  步骤1: 移动到{action_name}点上方 "
                       f"({target_x:.3f}, {target_y:.3f}, {above_z:.3f})")
-        if not self.arm.move_to_cartesian_pose(target_x, target_y, above_z, rx, ry, rz):
+        if not self.arm.move_to_cartesian_pose(target_x, target_y, above_z, trx, try_, trz):
             rospy.logwarn(f"  移动到{action_name}点上方失败。")
             return False
 
@@ -246,7 +273,7 @@ class MotionPlanner:
         rospy.loginfo(f"  步骤3: 下降到{action_name}位置 "
                       f"({target_x:.3f}, {target_y:.3f}, {target_z:.3f})")
         if not self.arm.move_to_cartesian_pose(target_x, target_y,
-                                                target_z, rx, ry, rz):
+                                                target_z, trx, try_, trz):
             rospy.logwarn(f"  下降到{action_name}位置失败。")
             return False
         rospy.sleep(0.3)
@@ -259,9 +286,9 @@ class MotionPlanner:
             self.arm.move_gripper(val)
             rospy.sleep(1.0)
 
-        # 步骤 5: 抬升离开
+        # 步骤 5: 抬升离开（使用与下降相同的倾斜姿态）
         rospy.loginfo(f"  步骤5: 抬升 ({target_x:.3f}, {target_y:.3f}, {above_z:.3f})")
-        if not self.arm.move_to_cartesian_pose(target_x, target_y, above_z, rx, ry, rz):
+        if not self.arm.move_to_cartesian_pose(target_x, target_y, above_z, trx, try_, trz):
             rospy.logwarn(f"  从{action_name}点抬升失败。")
             return False
 
