@@ -44,7 +44,9 @@ from chess_robot_arm.utils.constants import (
     MIN_APPROACH_Z, PICK_TRANSIT, POST_CALIB_HOME,
     PRE_ACTION_Z_LIFT, ROW_PICK_OFFSETS, ROW_PLACE_OFFSETS,
     COL_PICK_OFFSETS, COL_PLACE_OFFSETS, ROW_Z_OFFSET,
-    GRIPPER_TILT_THRESHOLD, GRIPPER_MAX_TILT_DEG,
+    GRIPPER_TILT_THRESHOLD, GRIPPER_MAX_JOINT5_DEG, GRIPPER_FIXED_YAW_DEG,
+    FREE_ROT_DIST_THRESHOLD, FAR_TRANSIT, FAR_PICK_Z_OFFSET, FAR_PLACE_Z_OFFSET,
+    FAR_GRIPPER_CLOSE, FAR_ROW_Z_OFFSET,
     GRIPPER_OPEN_VALUE, GRIPPER_CLOSE_VALUE,
     DEFAULT_GRIPPER_ORIENTATION_DEG,
 )
@@ -52,8 +54,8 @@ from chess_robot_arm.utils.constants import (
 # ============================================================
 # 校准配置
 # ============================================================
-SRC_SQUARE = "f1"       # 从哪个格子抓取棋子
-DST_SQUARE = "h8"       # 放置到哪个格子
+SRC_SQUARE = "a4"       # 从哪个格子抓取棋子
+DST_SQUARE = "a6"       # 放置到哪个格子
 
 # 夹爪姿态
 GRIPPER_RX, GRIPPER_RY, GRIPPER_RZ = DEFAULT_GRIPPER_ORIENTATION_DEG
@@ -100,15 +102,23 @@ def matrix_to_base_point_homography(col, row, cam_corners, H, board_z):
 # 抓取-放置逻辑
 # ============================================================
 
-def compute_gripper_orient(x, y, default_orient):
-    """远点自动倾斜夹爪，yaw指向目标方向，倾斜角≤GRIPPER_MAX_TILT_DEG。"""
+# ROLLBACK_FREE_ROTATION: compute_gripper_orient 返回 (orient, free_rot)
+def compute_gripper_orient(x, y, default_orient, force_far=False):
+    """计算夹爪姿态。force_far 或超出阈值时解除旋转限制+使用远点中转站。"""
     dist = math.hypot(x, y)
+    # ROLLBACK_FREE_ROTATION: 1行/a列强制远点，或超出阈值
+    if force_far or dist > FREE_ROT_DIST_THRESHOLD:
+        rospy.loginfo(f"  远点 ({x:.3f},{y:.3f}) dist={dist:.3f}, 解除旋转限制+远点中转站")
+        orient = np.array([FAR_TRANSIT["rx"], FAR_TRANSIT["ry"], FAR_TRANSIT["rz"]])
+        return orient, True
+
     if dist <= GRIPPER_TILT_THRESHOLD:
-        return default_orient
-    tilt_deg = min((dist - GRIPPER_TILT_THRESHOLD) / 0.25 * GRIPPER_MAX_TILT_DEG,
-                   GRIPPER_MAX_TILT_DEG)
-    target_yaw = math.degrees(math.atan2(y, x))
-    return np.array([0.0, 180.0 - tilt_deg, target_yaw])
+        tilt = 0.0
+    else:
+        tilt = min((dist - GRIPPER_TILT_THRESHOLD) / 0.25 * GRIPPER_MAX_JOINT5_DEG,
+                   GRIPPER_MAX_JOINT5_DEG)
+    return np.array([0.0, 180.0 - tilt, GRIPPER_FIXED_YAW_DEG]), False
+# END ROLLBACK_FREE_ROTATION
 
 
 def pick_and_place(arm, src_uci, dst_uci, to_base_func):
@@ -131,13 +141,24 @@ def pick_and_place(arm, src_uci, dst_uci, to_base_func):
     place_row_off = ROW_PLACE_OFFSETS.get(d_row, {"x": 0.0, "y": 0.0})
     place_col_off = COL_PLACE_OFFSETS.get(d_col, {"x": 0.0, "y": 0.0})
 
+    # ROLLBACK_FREE_ROTATION: 第1行(row=7) / a列(col=7) 直接视为远点，其余按阈值判断
+    pick_dist = math.hypot(s_x, s_y)
+    place_dist = math.hypot(d_x, d_y)
+    pick_is_far = (s_row == 7 or s_col == 7) or (pick_dist > FREE_ROT_DIST_THRESHOLD)
+    place_is_far = (d_row == 7 or d_col == 7) or (place_dist > FREE_ROT_DIST_THRESHOLD)
+
     pick_x = s_x + PICK_XY_OFFSET["x"] + pick_row_off["x"] + pick_col_off["x"]
     pick_y = s_y + PICK_XY_OFFSET["y"] + pick_row_off["y"] + pick_col_off["y"]
-    pick_z = s_z + ROW_Z_OFFSET.get(s_row, PICK_Z_OFFSET)
+    pick_z = s_z + ROW_Z_OFFSET.get(s_row, PICK_Z_OFFSET) \
+             + (FAR_PICK_Z_OFFSET if pick_is_far else 0.0) \
+             + (FAR_ROW_Z_OFFSET.get(s_row, 0.0) if pick_is_far else 0.0)
 
     place_x = d_x + PLACE_XY_OFFSET["x"] + place_row_off["x"] + place_col_off["x"]
     place_y = d_y + PLACE_XY_OFFSET["y"] + place_row_off["y"] + place_col_off["y"]
-    place_z = d_z + ROW_Z_OFFSET.get(d_row, PLACE_Z_OFFSET)
+    place_z = d_z + ROW_Z_OFFSET.get(d_row, PLACE_Z_OFFSET) \
+              + (FAR_PLACE_Z_OFFSET if place_is_far else 0.0) \
+              + (FAR_ROW_Z_OFFSET.get(d_row, 0.0) if place_is_far else 0.0)
+    # END ROLLBACK_FREE_ROTATION
 
     rospy.loginfo(f"抓取 {src_uci}: matrix({s_row},{s_col}) → base({s_x:.3f},{s_y:.3f},{s_z:.3f})")
     if pick_row_off["x"] or pick_row_off["y"]:
@@ -152,22 +173,34 @@ def pick_and_place(arm, src_uci, dst_uci, to_base_func):
         rospy.loginfo(f"  逐列偏移 col={d_col}: x={place_col_off['x']:.3f} y={place_col_off['y']:.3f}")
     rospy.loginfo(f"  +XY偏移 → ({place_x:.3f},{place_y:.3f},{place_z:.3f})")
 
-    # --- 计算抓取/放置姿态（远点自动倾斜） ---
-    pick_orient = compute_gripper_orient(pick_x, pick_y, [drx, dry, drz])
-    place_orient = compute_gripper_orient(place_x, place_y, [drx, dry, drz])
-    prx, pry_, prz = pick_orient
-    plrx, plry, plrz = place_orient
+    # ROLLBACK_FREE_ROTATION: 计算姿态，1行/a列强制远点
+    pick_orient, pick_free = compute_gripper_orient(pick_x, pick_y, [drx, dry, drz], pick_is_far)
+    place_orient, place_free = compute_gripper_orient(place_x, place_y, [drx, dry, drz], place_is_far)
 
-    # --- 步骤 0: 移动到安全中转点（始终用默认垂直姿态） ---
-    rospy.loginfo(f"步骤0: 移动到安全中转点 ({PICK_TRANSIT['x']:.3f}, {PICK_TRANSIT['y']:.3f}, {PICK_TRANSIT['z']:.3f})")
-    if not arm.move_to_cartesian_pose(PICK_TRANSIT["x"], PICK_TRANSIT["y"], PICK_TRANSIT["z"], drx, dry, drz):
-        rospy.logerr("移动到中转点失败。")
-        return False
+    def _move(arm, x, y, z, orient):
+        rx, ry, rz = orient
+        return arm.move_to_cartesian_pose(x, y, z, rx, ry, rz)
+
+    # --- 步骤 0: 移动到中转点（远点用 FAR_TRANSIT，近点用 PICK_TRANSIT） ---
+    # ROLLBACK_FREE_ROTATION: 远点切换到专用中转点
+    if pick_free:
+        transit = FAR_TRANSIT
+        rospy.loginfo(f"步骤0: 移动到远点中转站 ({transit['x']:.3f}, {transit['y']:.3f}, {transit['z']:.3f})")
+        if not arm.move_to_cartesian_pose(transit["x"], transit["y"], transit["z"],
+                                           transit["rx"], transit["ry"], transit["rz"]):
+            rospy.logerr("移动到远点中转站失败。")
+            return False
+    else:
+    # END ROLLBACK_FREE_ROTATION
+        rospy.loginfo(f"步骤0: 移动到安全中转点 ({PICK_TRANSIT['x']:.3f}, {PICK_TRANSIT['y']:.3f}, {PICK_TRANSIT['z']:.3f})")
+        if not arm.move_to_cartesian_pose(PICK_TRANSIT["x"], PICK_TRANSIT["y"], PICK_TRANSIT["z"], drx, dry, drz):
+            rospy.logerr("移动到中转点失败。")
+            return False
 
     # --- 步骤 1: 移动到抓取点上方 ---
     pick_above_z = max(pick_z + PRE_ACTION_Z_LIFT, MIN_APPROACH_Z)
     rospy.loginfo(f"步骤1: 移动到抓取点上方 ({pick_x:.3f}, {pick_y:.3f}, {pick_above_z:.3f})")
-    if not arm.move_to_cartesian_pose(pick_x, pick_y, pick_above_z, prx, pry_, prz):
+    if not _move(arm, pick_x, pick_y, pick_above_z, pick_orient):
         rospy.logerr("移动到抓取点上方失败。")
         return False
 
@@ -178,32 +211,33 @@ def pick_and_place(arm, src_uci, dst_uci, to_base_func):
 
     # --- 步骤 3: 下降到抓取位置 ---
     rospy.loginfo(f"步骤3: 下降到抓取位置 ({pick_x:.3f}, {pick_y:.3f}, {pick_z:.3f})")
-    if not arm.move_to_cartesian_pose(pick_x, pick_y, pick_z, prx, pry_, prz):
+    if not _move(arm, pick_x, pick_y, pick_z, pick_orient):
         rospy.logerr("下降到抓取位置失败。")
         return False
     rospy.sleep(0.3)
 
-    # --- 步骤 4: 闭合夹爪 ---
-    rospy.loginfo(f"步骤4: 闭合夹爪 ({GRIPPER_CLOSE_VALUE*100:.0f}%)")
-    arm.move_gripper(GRIPPER_CLOSE_VALUE)
+    # --- 步骤 4: 闭合夹爪（远点用专用闭合度） ---
+    close_val = FAR_GRIPPER_CLOSE if pick_free else GRIPPER_CLOSE_VALUE
+    rospy.loginfo(f"步骤4: 闭合夹爪 ({close_val*100:.0f}%)")
+    arm.move_gripper(close_val)
     rospy.sleep(1.0)
 
     # --- 步骤 5: 抬升 ---
     rospy.loginfo(f"步骤5: 抬升到抓取点上方 ({pick_x:.3f}, {pick_y:.3f}, {pick_above_z:.3f})")
-    if not arm.move_to_cartesian_pose(pick_x, pick_y, pick_above_z, prx, pry_, prz):
+    if not _move(arm, pick_x, pick_y, pick_above_z, pick_orient):
         rospy.logerr("抬升失败。")
         return False
 
     # --- 步骤 6: 移动到放置点上方 ---
     place_above_z = max(place_z + PRE_ACTION_Z_LIFT, MIN_APPROACH_Z)
     rospy.loginfo(f"步骤6: 移动到放置点上方 ({place_x:.3f}, {place_y:.3f}, {place_above_z:.3f})")
-    if not arm.move_to_cartesian_pose(place_x, place_y, place_above_z, plrx, plry, plrz):
+    if not _move(arm, place_x, place_y, place_above_z, place_orient):
         rospy.logerr("移动到放置点上方失败。")
         return False
 
     # --- 步骤 7: 下降到放置位置 ---
     rospy.loginfo(f"步骤7: 下降到放置位置 ({place_x:.3f}, {place_y:.3f}, {place_z:.3f})")
-    if not arm.move_to_cartesian_pose(place_x, place_y, place_z, plrx, plry, plrz):
+    if not _move(arm, place_x, place_y, place_z, place_orient):
         rospy.logerr("下降到放置位置失败。")
         return False
     rospy.sleep(0.3)
@@ -215,11 +249,11 @@ def pick_and_place(arm, src_uci, dst_uci, to_base_func):
 
     # --- 步骤 9: 抬升 ---
     rospy.loginfo(f"步骤9: 抬升 ({place_x:.3f}, {place_y:.3f}, {place_above_z:.3f})")
-    if not arm.move_to_cartesian_pose(place_x, place_y, place_above_z, plrx, plry, plrz):
+    if not _move(arm, place_x, place_y, place_above_z, place_orient):
         rospy.logerr("抬升失败。")
         return False
 
-    # --- 步骤 10: 归位（始终用避让位姿自带姿态） ---
+    # --- 步骤 10: 归位 ---
     rospy.loginfo(f"步骤10: 归位到避让位置 ({POST_CALIB_HOME['x']:.3f}, {POST_CALIB_HOME['y']:.3f}, {POST_CALIB_HOME['z']:.3f})")
     if not arm.move_to_cartesian_pose(POST_CALIB_HOME["x"], POST_CALIB_HOME["y"],
                                        POST_CALIB_HOME["z"],

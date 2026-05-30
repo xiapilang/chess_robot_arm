@@ -26,7 +26,10 @@ from chess_robot_arm.msg import PickAndPlaceGoalInCamera
 from chess_robot_arm.utils.constants import (
     POST_CALIB_HOME, PICK_XY_OFFSET, PLACE_XY_OFFSET,
     MIN_APPROACH_Z, PICK_TRANSIT, PRE_CALIB_HOME,
-    GRIPPER_TILT_THRESHOLD, GRIPPER_MAX_TILT_DEG,
+    GRIPPER_TILT_THRESHOLD, GRIPPER_MAX_JOINT5_DEG,
+    GRIPPER_FIXED_YAW_DEG, FREE_ROT_DIST_THRESHOLD, FAR_TRANSIT,
+    FAR_PICK_Z_OFFSET, FAR_PLACE_Z_OFFSET, FAR_GRIPPER_CLOSE, FAR_ROW_Z_OFFSET,
+    BOARD_CORNERS_BASE,
 )
 
 
@@ -206,23 +209,42 @@ class MotionPlanner:
         p_base = T_base_cam @ p_cam
         return p_base[:3]
 
+    # ROLLBACK_FREE_ROTATION: _compute_gripper_orient 返回 (orient, free_rot)
     def _compute_gripper_orient(self, x, y):
-        """根据目标基座标位置计算夹爪姿态。
+        """计算夹爪姿态及是否为远点。
 
-        距基座 ≤GRIPPER_TILT_THRESHOLD 保持垂直；
-        超出后 yaw 指向目标方向 + pitch 前倾，不超过 GRIPPER_MAX_TILT_DEG。
+        返回 (orient, free_rot):
+          free_rot=False → 正常；free_rot=True → 解除旋转限制+远点中转站
+        判断: 第1行/a列(坐标推算) || 距离>阈值
         """
         dist = math.hypot(x, y)
-        if dist <= GRIPPER_TILT_THRESHOLD:
-            return self.gripper_orient_deg
+        # ROLLBACK_FREE_ROTATION: a列(x>0.52) / 第1行(y近底边) / 距离>阈值
+        # 底边线: y_bottom = 0.314 + (x-0.43)/(0.648-0.43)*(0.062-0.314)
+        y_bottom = 0.314 + (x - 0.430) / 0.218 * (-0.252)
+        is_row1 = abs(y - y_bottom) < 0.04   # 距离底边<4cm
+        is_col_a = x > 0.52                    # a/b 列
+        is_far = is_row1 or is_col_a or dist > FREE_ROT_DIST_THRESHOLD
+        if is_far:
+            reason = []
+            if is_row1: reason.append("第1行")
+            if is_col_a: reason.append("a列")
+            if dist > FREE_ROT_DIST_THRESHOLD: reason.append(f"dist={dist:.3f}>{FREE_ROT_DIST_THRESHOLD}")
+            rospy.loginfo(f"  远点 ({x:.3f},{y:.3f}) {'+'.join(reason)}, 解除旋转限制+远点中转站")
+            orient = np.array([FAR_TRANSIT["rx"], FAR_TRANSIT["ry"], FAR_TRANSIT["rz"]])
+            return orient, True
 
-        tilt_deg = min((dist - GRIPPER_TILT_THRESHOLD) / 0.25 * GRIPPER_MAX_TILT_DEG,
-                       GRIPPER_MAX_TILT_DEG)
-        target_yaw = math.degrees(math.atan2(y, x))
-        orient = np.array([0.0, 180.0 - tilt_deg, target_yaw])
-        rospy.loginfo(f"  远点 ({x:.3f},{y:.3f}) 距离={dist:.3f}m, "
-                      f"倾斜={tilt_deg:.1f}° yaw={target_yaw:.1f}°")
-        return orient
+        if dist <= GRIPPER_TILT_THRESHOLD:
+            tilt = 0.0
+        else:
+            tilt = min((dist - GRIPPER_TILT_THRESHOLD) / 0.25 * GRIPPER_MAX_JOINT5_DEG,
+                       GRIPPER_MAX_JOINT5_DEG)
+
+        orient = np.array([0.0, 180.0 - tilt, GRIPPER_FIXED_YAW_DEG])
+        if tilt > 0:
+            rospy.loginfo(f"  远点 ({x:.3f},{y:.3f}) 距离={dist:.3f}m, "
+                          f"倾斜={tilt:.1f}° yaw={GRIPPER_FIXED_YAW_DEG:.1f}°")
+        return orient, False
+    # END ROLLBACK_FREE_ROTATION
 
     def _pick_or_place(self, action_name, target_base, z_offset, xy_offset, is_pick):
         """
@@ -240,26 +262,57 @@ class MotionPlanner:
 
         target_x = target_base[0] + xy_offset.get("x", 0.0)
         target_y = target_base[1] + xy_offset.get("y", 0.0)
-        target_z = target_base[2] + z_offset
+
+        # ROLLBACK_FREE_ROTATION: 先判断远点，叠加远点 Z 偏移 + 远排 Z 偏移
+        orient, free_rot = self._compute_gripper_orient(target_x, target_y)
+        if free_rot:
+            far_z = FAR_PICK_Z_OFFSET if is_pick else FAR_PLACE_Z_OFFSET
+            # 反算 target 所在排，若是远排(0/1/2)叠加 FAR_ROW_Z_OFFSET
+            bc = BOARD_CORNERS_BASE
+            u_est = (target_x - bc["top_left"]["x"]) / max(
+                bc["top_right"]["x"] - bc["top_left"]["x"], 0.001)
+            top_y = bc["top_left"]["y"] + u_est * (bc["top_right"]["y"] - bc["top_left"]["y"])
+            bot_y = bc["bottom_left"]["y"] + u_est * (bc["bottom_right"]["y"] - bc["bottom_left"]["y"])
+            v_est = (target_y - top_y) / max(bot_y - top_y, 0.001)
+            est_row = int(round(v_est * 7))
+            far_z += FAR_ROW_Z_OFFSET.get(est_row, 0.0)
+        else:
+            far_z = 0.0
+        # END ROLLBACK_FREE_ROTATION
+
+        target_z = target_base[2] + z_offset + far_z
         above_z = max(target_z + self.pre_action_lift, self.min_approach_z)
 
-        # 根据目标位置计算夹爪姿态（远点自动倾斜）
-        orient = self._compute_gripper_orient(target_x, target_y)
+        _move_to = self.arm.move_to_cartesian_pose
+        _move_args = lambda _x, _y, _z, _rx, _ry, _rz: (_x, _y, _z, _rx, _ry, _rz)
         trx, try_, trz = orient
+        # END ROLLBACK_FREE_ROTATION
 
-        # 步骤 0: 抓取前先移动到安全中转点（始终用默认垂直姿态）
+        # 步骤 0: 抓取前先移动到中转点（远点用 FAR_TRANSIT，近点用 PICK_TRANSIT）
         if is_pick:
-            rospy.loginfo(f"  步骤0: 移动到棋盘中心安全中转点 "
-                          f"({PICK_TRANSIT['x']:.3f}, {PICK_TRANSIT['y']:.3f}, {PICK_TRANSIT['z']:.3f})")
-            if not self.arm.move_to_cartesian_pose(
-                PICK_TRANSIT["x"], PICK_TRANSIT["y"], PICK_TRANSIT["z"], drx, dry, drz):
-                rospy.logwarn("  移动到中转点失败。")
-                return False
+            # ROLLBACK_FREE_ROTATION: 远点切换到专用中转点
+            if free_rot:
+                transit = FAR_TRANSIT
+                rospy.loginfo(f"  步骤0: 移动到远点中转站 "
+                              f"({transit['x']:.3f}, {transit['y']:.3f}, {transit['z']:.3f})")
+                if not self.arm.move_to_cartesian_pose(
+                    transit["x"], transit["y"], transit["z"],
+                    transit["rx"], transit["ry"], transit["rz"]):
+                    rospy.logwarn("  移动到远点中转站失败。")
+                    return False
+            else:
+            # END ROLLBACK_FREE_ROTATION
+                rospy.loginfo(f"  步骤0: 移动到棋盘中心安全中转点 "
+                              f"({PICK_TRANSIT['x']:.3f}, {PICK_TRANSIT['y']:.3f}, {PICK_TRANSIT['z']:.3f})")
+                if not self.arm.move_to_cartesian_pose(
+                    PICK_TRANSIT["x"], PICK_TRANSIT["y"], PICK_TRANSIT["z"], drx, dry, drz):
+                    rospy.logwarn("  移动到中转点失败。")
+                    return False
 
-        # 步骤 1: 移动到目标点上方（使用计算后的姿态）
+        # 步骤 1: 移动到目标点上方
         rospy.loginfo(f"  步骤1: 移动到{action_name}点上方 "
                       f"({target_x:.3f}, {target_y:.3f}, {above_z:.3f})")
-        if not self.arm.move_to_cartesian_pose(target_x, target_y, above_z, trx, try_, trz):
+        if not _move_to(*_move_args(target_x, target_y, above_z, trx, try_, trz)):
             rospy.logwarn(f"  移动到{action_name}点上方失败。")
             return False
 
@@ -272,23 +325,27 @@ class MotionPlanner:
         # 步骤 3: 下降到精确位置（含 XY 偏移）
         rospy.loginfo(f"  步骤3: 下降到{action_name}位置 "
                       f"({target_x:.3f}, {target_y:.3f}, {target_z:.3f})")
-        if not self.arm.move_to_cartesian_pose(target_x, target_y,
-                                                target_z, trx, try_, trz):
+        if not _move_to(*_move_args(target_x, target_y, target_z, trx, try_, trz)):
             rospy.logwarn(f"  下降到{action_name}位置失败。")
             return False
         rospy.sleep(0.3)
 
         # 步骤 4: 驱动夹爪
         if self.arm.is_gripper_present:
-            val = self.gripper_close_val if is_pick else self.gripper_open_val
+            # ROLLBACK_FREE_ROTATION: 远点用专用闭合度
+            if is_pick and free_rot:
+                val = FAR_GRIPPER_CLOSE
+            else:
+                val = self.gripper_close_val if is_pick else self.gripper_open_val
+            # END ROLLBACK_FREE_ROTATION
             word = "闭合" if is_pick else "张开"
             rospy.loginfo(f"  步骤4: {word}夹爪 ({val*100:.0f}%)")
             self.arm.move_gripper(val)
             rospy.sleep(1.0)
 
-        # 步骤 5: 抬升离开（使用与下降相同的倾斜姿态）
+        # 步骤 5: 抬升离开
         rospy.loginfo(f"  步骤5: 抬升 ({target_x:.3f}, {target_y:.3f}, {above_z:.3f})")
-        if not self.arm.move_to_cartesian_pose(target_x, target_y, above_z, trx, try_, trz):
+        if not _move_to(*_move_args(target_x, target_y, above_z, trx, try_, trz)):
             rospy.logwarn(f"  从{action_name}点抬升失败。")
             return False
 
@@ -308,7 +365,7 @@ class MotionPlanner:
         )
 
     def _go_post_calib_home(self):
-        """使用 POST_CALIB_HOME 参数归位。"""
+        """归位到 POST_CALIB_HOME。"""
         return self.arm.go_home(
             home_x=POST_CALIB_HOME["x"],
             home_y=POST_CALIB_HOME["y"],

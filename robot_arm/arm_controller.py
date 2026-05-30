@@ -337,6 +337,42 @@ class KinovaArmController:
         rospy.logerr(f"笛卡尔移动失败，已重试 {max_retries} 次。")
         return False
 
+    # ROLLBACK_FREE_ROTATION: 新增方法，跳过 Cartesian 直接走 IK+关节空间
+    def move_to_cartesian_free_rot(self, x, y, z, theta_x=0.0, theta_y=180.0, theta_z=0.0,
+                                    guess_deg=None):
+        """跳过 Cartesian 轨迹尝试，直接 IK 求解后以关节轨迹执行。
+        guess_deg: 初始关节角猜测(度)，帮助 IK 收敛。"""
+        if not self.is_init_success:
+            return False
+        rospy.loginfo(f"自由旋转移动到: X={x:.3f} Y={y:.3f} Z={z:.3f}")
+        try:
+            ik_req = ComputeInverseKinematicsRequest()
+            ik_req.input.cartesian_pose.x = x
+            ik_req.input.cartesian_pose.y = y
+            ik_req.input.cartesian_pose.z = z
+            ik_req.input.cartesian_pose.theta_x = theta_x
+            ik_req.input.cartesian_pose.theta_y = theta_y
+            ik_req.input.cartesian_pose.theta_z = theta_z
+            # ROLLBACK_FREE_ROTATION: 传入当前关节角作为 IK 初始猜测
+            if guess_deg is not None and len(guess_deg) >= 6:
+                g = ik_req.input.guess
+                for i, ang in enumerate(guess_deg[:6]):
+                    ja = g.joint_angles.add()
+                    ja.joint_identifier = i
+                    ja.value = ang
+            # END ROLLBACK_FREE_ROTATION
+            ik_resp = self.compute_ik(ik_req)
+            jt_req = PlayJointTrajectoryRequest()
+            jt_req.input.joint_angles.joint_angles = ik_resp.output.joint_angles
+            self.play_joint_traj(jt_req)
+            rospy.loginfo("  自由旋转轨迹已发送。")
+            rospy.sleep(3.0)
+            return True
+        except Exception as e:
+            rospy.logerr(f"自由旋转移动失败: {e}")
+            return False
+    # END ROLLBACK_FREE_ROTATION
+
     def move_gripper(self, value):
         """
         控制夹爪开合。
