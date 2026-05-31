@@ -51,6 +51,7 @@ catkin_install_python(PROGRAMS
   utils/calibration.py
   utils/pick_place_calibrate.py
   utils/test_special_moves.py
+  utils/test_capture.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

@@ -46,16 +46,18 @@ from chess_robot_arm.utils.constants import (
     COL_PICK_OFFSETS, COL_PLACE_OFFSETS, ROW_Z_OFFSET, ROW_PLACE_Z_OFFSET,
     GRIPPER_TILT_THRESHOLD, GRIPPER_MAX_JOINT5_DEG, GRIPPER_FIXED_YAW_DEG,
     FAR_TRANSIT, FAR_PICK_Z_OFFSET, FAR_PLACE_Z_OFFSET,
-    FAR_GRIPPER_CLOSE, FAR_ROW_Z_OFFSET, SPECIAL_Z_OVERRIDE, SPECIAL_XY_OVERRIDE, FAR_CELLS,
+    FAR_GRIPPER_CLOSE, FAR_ROW_Z_OFFSET, SPECIAL_Z_OVERRIDE, SPECIAL_XY_PICK_OVERRIDE, SPECIAL_XY_PLACE_OVERRIDE, FAR_CELLS,
     GRIPPER_OPEN_VALUE, GRIPPER_CLOSE_VALUE,
+    PAWN_KNIGHT_GRIPPER_CLOSE,
     DEFAULT_GRIPPER_ORIENTATION_DEG,
 )
 
 # ============================================================
 # 校准配置
 # ============================================================
-SRC_SQUARE = "a3"       # 从哪个格子抓取棋子
-DST_SQUARE = "h6"       # 放置到哪个格子
+SRC_SQUARE = "f5"       # 从哪个格子抓取棋子
+DST_SQUARE = "d2"        # 放置到哪个格子
+PIECE_TYPE = "q"          # 被抓棋子的 FEN 符号，兵/马填 p/n/P/N 可触发专用闭合度 0.95
 
 # 夹爪姿态
 GRIPPER_RX, GRIPPER_RY, GRIPPER_RZ = DEFAULT_GRIPPER_ORIENTATION_DEG
@@ -121,10 +123,11 @@ def compute_gripper_orient(x, y, default_orient, force_far=False):
 # END ROLLBACK_MANUAL_FAR
 
 
-def pick_and_place(arm, src_uci, dst_uci, to_base_func):
+def pick_and_place(arm, src_uci, dst_uci, to_base_func, piece_type=""):
     """
     执行一次抓取-放置：从 src_uci 抓取 → 放置到 dst_uci。
     to_base_func(col, row) → (x, y, z)，应用 constants.py 中的偏移量。
+    piece_type: 被抓棋子的 FEN 符号 (p/n/b/r/q/k/P/N/B/R/Q/K)，用于兵/马专用闭合度。
     """
     drx, dry, drz = GRIPPER_RX, GRIPPER_RY, GRIPPER_RZ  # 默认垂直姿态
 
@@ -145,8 +148,8 @@ def pick_and_place(arm, src_uci, dst_uci, to_base_func):
     pick_is_far = (s_row, s_col) in FAR_CELLS
     place_is_far = (d_row, d_col) in FAR_CELLS
 
-    sp_xy_pick = SPECIAL_XY_OVERRIDE.get((s_row, s_col), {"x": 0.0, "y": 0.0})
-    sp_xy_place = SPECIAL_XY_OVERRIDE.get((d_row, d_col), {"x": 0.0, "y": 0.0})
+    sp_xy_pick = SPECIAL_XY_PICK_OVERRIDE.get((s_row, s_col), {"x": 0.0, "y": 0.0})
+    sp_xy_place = SPECIAL_XY_PLACE_OVERRIDE.get((d_row, d_col), {"x": 0.0, "y": 0.0})
 
     pick_x = s_x + PICK_XY_OFFSET["x"] + pick_row_off["x"] + pick_col_off["x"] + sp_xy_pick["x"]
     pick_y = s_y + PICK_XY_OFFSET["y"] + pick_row_off["y"] + pick_col_off["y"] + sp_xy_pick["y"]
@@ -195,7 +198,7 @@ def pick_and_place(arm, src_uci, dst_uci, to_base_func):
         return arm.move_to_cartesian_pose(x, y, z, rx, ry, rz)
 
     # --- 步骤 0: 移动到中转点（远点用 FAR_TRANSIT，近点用 PICK_TRANSIT） ---
-    # ROLLBACK_FREE_ROTATION: 远点切换到专用中转点
+    # 中转点只看抓取点：抓取远点→FAR_TRANSIT，抓取近点→PICK_TRANSIT
     if pick_free:
         transit = FAR_TRANSIT
         rospy.loginfo(f"步骤0: 移动到远点中转站 ({transit['x']:.3f}, {transit['y']:.3f}, {transit['z']:.3f})")
@@ -229,8 +232,14 @@ def pick_and_place(arm, src_uci, dst_uci, to_base_func):
         return False
     rospy.sleep(0.3)
 
-    # --- 步骤 4: 闭合夹爪（远点用专用闭合度） ---
-    close_val = FAR_GRIPPER_CLOSE if pick_free else GRIPPER_CLOSE_VALUE
+    # --- 步骤 4: 闭合夹爪 ---
+    # 优先级: 兵/马专用 > 远点专用 > 默认
+    if piece_type and piece_type.lower() in ('p', 'n'):
+        close_val = PAWN_KNIGHT_GRIPPER_CLOSE
+    elif pick_free:
+        close_val = FAR_GRIPPER_CLOSE
+    else:
+        close_val = GRIPPER_CLOSE_VALUE
     rospy.loginfo(f"步骤4: 闭合夹爪 ({close_val*100:.0f}%)")
     arm.move_gripper(close_val)
     rospy.sleep(1.0)
@@ -329,8 +338,11 @@ def main():
     rospy.loginfo(f"  PLACE_Z_OFFSET  = {PLACE_Z_OFFSET}")
     rospy.loginfo(f"  MIN_APPROACH_Z  = {MIN_APPROACH_Z}")
     rospy.loginfo(f"  PICK_TRANSIT    = {PICK_TRANSIT}")
+    rospy.loginfo(f"  GRIPPER_CLOSE_VALUE       = {GRIPPER_CLOSE_VALUE}")
+    rospy.loginfo(f"  FAR_GRIPPER_CLOSE         = {FAR_GRIPPER_CLOSE}")
+    rospy.loginfo(f"  PAWN_KNIGHT_GRIPPER_CLOSE = {PAWN_KNIGHT_GRIPPER_CLOSE}")
     rospy.loginfo("=" * 60)
-    rospy.loginfo(f"测试走法: {SRC_SQUARE} → {DST_SQUARE}")
+    rospy.loginfo(f"测试走法: {SRC_SQUARE} → {DST_SQUARE}  棋子种类='{PIECE_TYPE}'")
 
     # --- ArUco 角点采集 + 仿射标定 ---
     collector = ArucoCornerCollector(timeout=30.0)
@@ -365,7 +377,7 @@ def main():
         return
 
     # --- 执行校准抓放 ---
-    success = pick_and_place(arm, SRC_SQUARE, DST_SQUARE, to_base_func)
+    success = pick_and_place(arm, SRC_SQUARE, DST_SQUARE, to_base_func, piece_type=PIECE_TYPE)
 
     if success:
         rospy.loginfo("校准完成。观察放置精度：")

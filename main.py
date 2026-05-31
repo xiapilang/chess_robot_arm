@@ -210,12 +210,15 @@ class TerminalChessOrchestrator:
             else:
                 captured_col, captured_row = to_col, to_row
 
+            captured_piece = self.board_matrix[captured_row][captured_col]
+
             self.eat_count += 1
             msg_eat = PickAndPlaceGoalInCamera()
             msg_eat.object_id_at_pick = f"{captured_row},{captured_col}"
             msg_eat.pick_position_in_camera = self._pick_point(
                 captured_col, captured_row)
             msg_eat.place_position_in_camera = self._get_garbage_place()
+            msg_eat.piece_type = captured_piece if captured_piece != EMPTY_SQUARE else ""
             self.goal_pub.publish(msg_eat)
             self.eat_status_pub.publish(String("BUSY"))
             rospy.sleep(0.5)
@@ -225,6 +228,8 @@ class TerminalChessOrchestrator:
             rospy.logwarn("等待机械臂 IDLE 超时。")
             return False
 
+        moving_piece = self.board_matrix[from_row][from_col]
+
         msg_move = PickAndPlaceGoalInCamera()
         msg_move.object_id_at_pick = f"{from_row},{from_col}"
         msg_move.pick_position_in_camera = self._pick_point(
@@ -232,11 +237,12 @@ class TerminalChessOrchestrator:
         msg_move.target_location_id_at_place = f"{to_row},{to_col}"
         msg_move.place_position_in_camera = self._place_point(
             to_col, to_row)
+        msg_move.piece_type = moving_piece if moving_piece != EMPTY_SQUARE else ""
         self.goal_pub.publish(msg_move)
         self.eat_status_pub.publish(String("IDLE"))
 
         # --- 王车易位：额外移动车 ---
-        piece = self.current_board[from_row][from_col]
+        piece = moving_piece
         if piece and piece != EMPTY_SQUARE and piece.lower() == 'k' and abs(to_col - from_col) == 2:
             rospy.loginfo("王车易位！移动车。")
             rospy.sleep(2.0)

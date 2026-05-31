@@ -29,7 +29,8 @@ from chess_robot_arm.utils.constants import (
     GRIPPER_TILT_THRESHOLD, GRIPPER_MAX_JOINT5_DEG,
     GRIPPER_FIXED_YAW_DEG, FAR_TRANSIT,
     FAR_PICK_Z_OFFSET, FAR_PLACE_Z_OFFSET, FAR_GRIPPER_CLOSE, FAR_ROW_Z_OFFSET,
-    SPECIAL_Z_OVERRIDE, SPECIAL_XY_OVERRIDE, FAR_CELLS, ROW_PLACE_Z_OFFSET,
+    SPECIAL_Z_OVERRIDE, SPECIAL_XY_PICK_OVERRIDE, SPECIAL_XY_PLACE_OVERRIDE, FAR_CELLS, ROW_PLACE_Z_OFFSET,
+    PAWN_KNIGHT_GRIPPER_CLOSE,
 )
 
 
@@ -211,7 +212,7 @@ class MotionPlanner:
 
     # ROLLBACK_FREE_ROTATION: _compute_gripper_orient 返回 (orient, free_rot)
     def _compute_gripper_orient(self, x, y, row=None, col=None):
-        """计算夹爪姿态及是否为远点。判断: (row,col) in FAR_CELLS。"""
+        """计算夹爪姿态及是否为远点。仅判断当前 (row,col) 是否在 FAR_CELLS 中。"""
         dist = math.hypot(x, y)
         # ROLLBACK_MANUAL_FAR: 手动指定远点，关闭距离阈值
         is_far = (row is not None and col is not None
@@ -235,26 +236,31 @@ class MotionPlanner:
     # END ROLLBACK_FREE_ROTATION
 
     def _pick_or_place(self, action_name, target_base, z_offset, xy_offset, is_pick,
-                        row=None, col=None):
+                        row=None, col=None, piece_type=""):
         """
         执行单次抓取或放置动作序列:
 
         步骤:
+          0. 抓取前移动到中转点（远点用 FAR_TRANSIT，近点用 PICK_TRANSIT）
           1. 移动到目标点上方（预动作位置）
           2. 如果是抓取：张开夹爪
           3. 下降到精确的目标位置（含 XY 微调偏移）
           4. 闭合（抓取）或张开（放置）夹爪
           5. 抬升离开目标点
+
+        piece_type: 被抓棋子的 FEN 符号，用于兵/马专用闭合度判断。
         """
         rospy.loginfo(f"--- {action_name} 序列开始 ---")
         drx, dry, drz = self.gripper_orient_deg  # 中转点/默认姿态
 
-        sp_xy = SPECIAL_XY_OVERRIDE.get((row, col), {"x": 0.0, "y": 0.0}) if row is not None and col is not None else {"x": 0.0, "y": 0.0}
+        sp_xy_override = SPECIAL_XY_PICK_OVERRIDE if is_pick else SPECIAL_XY_PLACE_OVERRIDE
+        sp_xy = sp_xy_override.get((row, col), {"x": 0.0, "y": 0.0}) if row is not None and col is not None else {"x": 0.0, "y": 0.0}
         target_x = target_base[0] + xy_offset.get("x", 0.0) + sp_xy["x"]
         target_y = target_base[1] + xy_offset.get("y", 0.0) + sp_xy["y"]
 
-        # ROLLBACK_FREE_ROTATION: 先判断远点，叠加远点 Z 偏移 + 远排 Z 偏移
-        orient, free_rot = self._compute_gripper_orient(target_x, target_y, row, col)
+        # 姿态/远点判断：只看当前操作点（抓取看抓取点，放置看放置点）
+        orient, free_rot = self._compute_gripper_orient(
+            target_x, target_y, row, col)
         # 特制格子 Z 覆盖所有其他 Z 偏移
         sp_z = None
         if row is not None and col is not None:
@@ -280,10 +286,14 @@ class MotionPlanner:
         trx, try_, trz = orient
         # END ROLLBACK_FREE_ROTATION
 
+        # 中转点选择：只看抓取点是否为远点（与单次抓放逻辑一致）
+        pick_only_far = (row is not None and col is not None
+                         and (row, col) in FAR_CELLS)
+
         # 步骤 0: 抓取前先移动到中转点（远点用 FAR_TRANSIT，近点用 PICK_TRANSIT）
         if is_pick:
-            # ROLLBACK_FREE_ROTATION: 远点切换到专用中转点
-            if free_rot:
+            # 中转点只看抓取点：抓取远点→FAR_TRANSIT，抓取近点→PICK_TRANSIT
+            if pick_only_far:
                 transit = FAR_TRANSIT
                 rospy.loginfo(f"  步骤0: 移动到远点中转站 "
                               f"({transit['x']:.3f}, {transit['y']:.3f}, {transit['z']:.3f})")
@@ -324,8 +334,11 @@ class MotionPlanner:
 
         # 步骤 4: 驱动夹爪
         if self.arm.is_gripper_present:
-            # ROLLBACK_FREE_ROTATION: 远点用专用闭合度
-            if is_pick and free_rot:
+            # 闭合度优先级: 兵/马专用 > 远点专用 > 默认
+            if is_pick and piece_type and piece_type.lower() in ('p', 'n'):
+                val = PAWN_KNIGHT_GRIPPER_CLOSE
+                rospy.loginfo(f"  步骤4: 兵/马专用闭合度 ({val*100:.0f}%)")
+            elif is_pick and free_rot:
                 val = FAR_GRIPPER_CLOSE
             else:
                 val = self.gripper_close_val if is_pick else self.gripper_open_val
@@ -404,8 +417,11 @@ class MotionPlanner:
         pick_row, pick_col = _parse_rc(msg.object_id_at_pick)
         place_row, place_col = _parse_rc(msg.target_location_id_at_place)
 
+        piece_type = getattr(msg, 'piece_type', '')
+
         rospy.loginfo(f"收到目标: 抓取 '{msg.object_id_at_pick}' "
-                      f"-> 放置 '{msg.target_location_id_at_place}'")
+                      f"-> 放置 '{msg.target_location_id_at_place}'"
+                      f"  棋子种类='{piece_type}'")
 
         if self.use_base_frame_coords:
             # 坐标已经是基座标系，直接使用
@@ -432,7 +448,7 @@ class MotionPlanner:
 
         # 执行抓取
         if not self._pick_or_place("抓取", pick_base, self.pick_z_offset, self.pick_xy_offset, True,
-                                    pick_row, pick_col):
+                                    pick_row, pick_col, piece_type=piece_type):
             rospy.logerr("抓取失败。")
             self._go_post_calib_home()
             self._set_state(self.STATE_IDLE)
