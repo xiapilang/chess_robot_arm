@@ -236,8 +236,8 @@ class TerminalChessOrchestrator:
         self.eat_status_pub.publish(String("IDLE"))
 
         # --- 王车易位：额外移动车 ---
-        piece = self.board_matrix[from_row][from_col]
-        if piece and piece.lower() == 'k' and abs(to_col - from_col) == 2:
+        piece = self.current_board[from_row][from_col]
+        if piece and piece != EMPTY_SQUARE and piece.lower() == 'k' and abs(to_col - from_col) == 2:
             rospy.loginfo("王车易位！移动车。")
             rospy.sleep(2.0)
             if not self._wait_for_arm_idle():

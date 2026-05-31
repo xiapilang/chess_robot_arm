@@ -29,7 +29,7 @@ from chess_robot_arm.utils.constants import (
     GRIPPER_TILT_THRESHOLD, GRIPPER_MAX_JOINT5_DEG,
     GRIPPER_FIXED_YAW_DEG, FAR_TRANSIT,
     FAR_PICK_Z_OFFSET, FAR_PLACE_Z_OFFSET, FAR_GRIPPER_CLOSE, FAR_ROW_Z_OFFSET,
-    SPECIAL_Z_OVERRIDE, FAR_CELLS,
+    SPECIAL_Z_OVERRIDE, SPECIAL_XY_OVERRIDE, FAR_CELLS, ROW_PLACE_Z_OFFSET,
 )
 
 
@@ -249,8 +249,9 @@ class MotionPlanner:
         rospy.loginfo(f"--- {action_name} 序列开始 ---")
         drx, dry, drz = self.gripper_orient_deg  # 中转点/默认姿态
 
-        target_x = target_base[0] + xy_offset.get("x", 0.0)
-        target_y = target_base[1] + xy_offset.get("y", 0.0)
+        sp_xy = SPECIAL_XY_OVERRIDE.get((row, col), {"x": 0.0, "y": 0.0}) if row is not None and col is not None else {"x": 0.0, "y": 0.0}
+        target_x = target_base[0] + xy_offset.get("x", 0.0) + sp_xy["x"]
+        target_y = target_base[1] + xy_offset.get("y", 0.0) + sp_xy["y"]
 
         # ROLLBACK_FREE_ROTATION: 先判断远点，叠加远点 Z 偏移 + 远排 Z 偏移
         orient, free_rot = self._compute_gripper_orient(target_x, target_y, row, col)
@@ -266,6 +267,9 @@ class MotionPlanner:
                 far_z += FAR_ROW_Z_OFFSET.get(row, 0.0)
         else:
             far_z = 0.0
+        # 逐排放置专用 Z
+        if not is_pick and row is not None:
+            far_z += ROW_PLACE_Z_OFFSET.get(row, 0.0)
         # END ROLLBACK_FREE_ROTATION
 
         target_z = target_base[2] + z_offset + far_z
@@ -442,8 +446,19 @@ class MotionPlanner:
             self._set_state(self.STATE_IDLE)
             return
 
-        # 返回 home
-        self._go_post_calib_home()
+        # 吃子(place到弃子区)走中转点等待下一步；正常走法则归位
+        if place_col is None:
+            # 吃子完成，回到中转点等待主走法
+            rospy.loginfo("吃子完成，移动到中转点等待...")
+            if pick_col is not None and (pick_row, pick_col) in FAR_CELLS:
+                t = FAR_TRANSIT
+            else:
+                t = PICK_TRANSIT
+            self.arm.move_to_cartesian_pose(
+                t["x"], t["y"], t["z"],
+                self.gripper_orient_deg[0], self.gripper_orient_deg[1], self.gripper_orient_deg[2])
+        else:
+            self._go_post_calib_home()
         self._set_state(self.STATE_IDLE)
         rospy.loginfo("抓取放置完成。机械臂空闲。")
 

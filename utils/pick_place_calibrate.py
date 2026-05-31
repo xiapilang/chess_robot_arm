@@ -43,10 +43,10 @@ from chess_robot_arm.utils.constants import (
     PICK_Z_OFFSET, PLACE_Z_OFFSET,
     MIN_APPROACH_Z, PICK_TRANSIT, POST_CALIB_HOME,
     PRE_ACTION_Z_LIFT, ROW_PICK_OFFSETS, ROW_PLACE_OFFSETS,
-    COL_PICK_OFFSETS, COL_PLACE_OFFSETS, ROW_Z_OFFSET,
+    COL_PICK_OFFSETS, COL_PLACE_OFFSETS, ROW_Z_OFFSET, ROW_PLACE_Z_OFFSET,
     GRIPPER_TILT_THRESHOLD, GRIPPER_MAX_JOINT5_DEG, GRIPPER_FIXED_YAW_DEG,
     FAR_TRANSIT, FAR_PICK_Z_OFFSET, FAR_PLACE_Z_OFFSET,
-    FAR_GRIPPER_CLOSE, FAR_ROW_Z_OFFSET, SPECIAL_Z_OVERRIDE, FAR_CELLS,
+    FAR_GRIPPER_CLOSE, FAR_ROW_Z_OFFSET, SPECIAL_Z_OVERRIDE, SPECIAL_XY_OVERRIDE, FAR_CELLS,
     GRIPPER_OPEN_VALUE, GRIPPER_CLOSE_VALUE,
     DEFAULT_GRIPPER_ORIENTATION_DEG,
 )
@@ -54,8 +54,8 @@ from chess_robot_arm.utils.constants import (
 # ============================================================
 # 校准配置
 # ============================================================
-SRC_SQUARE = "f1"       # 从哪个格子抓取棋子
-DST_SQUARE = "b3"       # 放置到哪个格子
+SRC_SQUARE = "a3"       # 从哪个格子抓取棋子
+DST_SQUARE = "h6"       # 放置到哪个格子
 
 # 夹爪姿态
 GRIPPER_RX, GRIPPER_RY, GRIPPER_RZ = DEFAULT_GRIPPER_ORIENTATION_DEG
@@ -145,8 +145,11 @@ def pick_and_place(arm, src_uci, dst_uci, to_base_func):
     pick_is_far = (s_row, s_col) in FAR_CELLS
     place_is_far = (d_row, d_col) in FAR_CELLS
 
-    pick_x = s_x + PICK_XY_OFFSET["x"] + pick_row_off["x"] + pick_col_off["x"]
-    pick_y = s_y + PICK_XY_OFFSET["y"] + pick_row_off["y"] + pick_col_off["y"]
+    sp_xy_pick = SPECIAL_XY_OVERRIDE.get((s_row, s_col), {"x": 0.0, "y": 0.0})
+    sp_xy_place = SPECIAL_XY_OVERRIDE.get((d_row, d_col), {"x": 0.0, "y": 0.0})
+
+    pick_x = s_x + PICK_XY_OFFSET["x"] + pick_row_off["x"] + pick_col_off["x"] + sp_xy_pick["x"]
+    pick_y = s_y + PICK_XY_OFFSET["y"] + pick_row_off["y"] + pick_col_off["y"] + sp_xy_pick["y"]
     # 特制格子 Z 偏移覆盖所有其他 Z 偏移
     sp_z_pick = SPECIAL_Z_OVERRIDE.get((s_row, s_col))
     sp_z_place = SPECIAL_Z_OVERRIDE.get((d_row, d_col))
@@ -158,13 +161,14 @@ def pick_and_place(arm, src_uci, dst_uci, to_base_func):
                  + (FAR_PICK_Z_OFFSET if pick_is_far else 0.0) \
                  + (FAR_ROW_Z_OFFSET.get(s_row, 0.0) if pick_is_far else 0.0)
 
-    place_x = d_x + PLACE_XY_OFFSET["x"] + place_row_off["x"] + place_col_off["x"]
-    place_y = d_y + PLACE_XY_OFFSET["y"] + place_row_off["y"] + place_col_off["y"]
+    place_x = d_x + PLACE_XY_OFFSET["x"] + place_row_off["x"] + place_col_off["x"] + sp_xy_place["x"]
+    place_y = d_y + PLACE_XY_OFFSET["y"] + place_row_off["y"] + place_col_off["y"] + sp_xy_place["y"]
     if sp_z_place is not None:
         rospy.loginfo(f"  特制Z覆盖 放置({d_row},{d_col}): {sp_z_place}")
         place_z = d_z + sp_z_place
     else:
         place_z = d_z + ROW_Z_OFFSET.get(d_row, PLACE_Z_OFFSET) \
+                  + ROW_PLACE_Z_OFFSET.get(d_row, 0.0) \
                   + (FAR_PLACE_Z_OFFSET if place_is_far else 0.0) \
                   + (FAR_ROW_Z_OFFSET.get(d_row, 0.0) if place_is_far else 0.0)
     # END ROLLBACK_FREE_ROTATION
