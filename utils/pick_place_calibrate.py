@@ -56,7 +56,7 @@ from chess_robot_arm.utils.constants import (
 # 校准配置
 # ============================================================
 SRC_SQUARE = "f5"       # 从哪个格子抓取棋子
-DST_SQUARE = "d2"        # 放置到哪个格子
+DST_SQUARE = "a7"        # 放置到哪个格子
 PIECE_TYPE = "q"          # 被抓棋子的 FEN 符号，兵/马填 p/n/P/N 可触发专用闭合度 0.95
 
 # 夹爪姿态
