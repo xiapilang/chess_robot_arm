@@ -73,7 +73,7 @@ class MotionPlanner:
         self.dh_params = rospy.get_param("~dh_params", None)
         self.dof = rospy.get_param("~dof", 6)
 
-        # --- 手眼变换 T_ee_camera（末端执行器 → 相机光学坐标系） ---
+        # T_ee_camera
         trans = rospy.get_param("~T_ee_camera_translation", [0.060, -0.040, -0.110])
         rot   = rospy.get_param("~T_ee_camera_rotation",
                                 [[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]])
@@ -210,11 +210,9 @@ class MotionPlanner:
         p_base = T_base_cam @ p_cam
         return p_base[:3]
 
-    # ROLLBACK_FREE_ROTATION: _compute_gripper_orient 返回 (orient, free_rot)
     def _compute_gripper_orient(self, x, y, row=None, col=None):
         """计算夹爪姿态及是否为远点。仅判断当前 (row,col) 是否在 FAR_CELLS 中。"""
         dist = math.hypot(x, y)
-        # ROLLBACK_MANUAL_FAR: 手动指定远点，关闭距离阈值
         is_far = (row is not None and col is not None
                   and (row, col) in FAR_CELLS)
         if is_far:
@@ -233,7 +231,6 @@ class MotionPlanner:
             rospy.loginfo(f"  远点 ({x:.3f},{y:.3f}) 距离={dist:.3f}m, "
                           f"倾斜={tilt:.1f}° yaw={GRIPPER_FIXED_YAW_DEG:.1f}°")
         return orient, False
-    # END ROLLBACK_FREE_ROTATION
 
     def _pick_or_place(self, action_name, target_base, z_offset, xy_offset, is_pick,
                         row=None, col=None, piece_type=""):
@@ -261,7 +258,6 @@ class MotionPlanner:
         # 姿态/远点判断：只看当前操作点（抓取看抓取点，放置看放置点）
         orient, free_rot = self._compute_gripper_orient(
             target_x, target_y, row, col)
-        # 特制格子 Z 覆盖所有其他 Z 偏移
         sp_z = None
         if row is not None and col is not None:
             sp_z = SPECIAL_Z_OVERRIDE.get((row, col))
@@ -276,7 +272,7 @@ class MotionPlanner:
         # 逐排放置专用 Z
         if not is_pick and row is not None:
             far_z += ROW_PLACE_Z_OFFSET.get(row, 0.0)
-        # END ROLLBACK_FREE_ROTATION
+
 
         target_z = target_base[2] + z_offset + far_z
         above_z = max(target_z + self.pre_action_lift, self.min_approach_z)
@@ -284,7 +280,7 @@ class MotionPlanner:
         _move_to = self.arm.move_to_cartesian_pose
         _move_args = lambda _x, _y, _z, _rx, _ry, _rz: (_x, _y, _z, _rx, _ry, _rz)
         trx, try_, trz = orient
-        # END ROLLBACK_FREE_ROTATION
+
 
         # 中转点选择：只看抓取点是否为远点（与单次抓放逻辑一致）
         pick_only_far = (row is not None and col is not None
@@ -303,7 +299,7 @@ class MotionPlanner:
                     rospy.logwarn("  移动到远点中转站失败。")
                     return False
             else:
-            # END ROLLBACK_FREE_ROTATION
+    
                 rospy.loginfo(f"  步骤0: 移动到棋盘中心安全中转点 "
                               f"({PICK_TRANSIT['x']:.3f}, {PICK_TRANSIT['y']:.3f}, {PICK_TRANSIT['z']:.3f})")
                 if not self.arm.move_to_cartesian_pose(
@@ -342,7 +338,7 @@ class MotionPlanner:
                 val = FAR_GRIPPER_CLOSE
             else:
                 val = self.gripper_close_val if is_pick else self.gripper_open_val
-            # END ROLLBACK_FREE_ROTATION
+    
             word = "闭合" if is_pick else "张开"
             rospy.loginfo(f"  步骤4: {word}夹爪 ({val*100:.0f}%)")
             self.arm.move_gripper(val)

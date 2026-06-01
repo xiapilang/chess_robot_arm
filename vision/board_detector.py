@@ -2,7 +2,7 @@
 """
 国际象棋棋盘检测节点（ArUco 标签 + Intel RealSense 相机）。
 
-改编自 EE368_Project 的 chessboard_detector_node.py，适配 8×8 国际象棋棋盘。
+8×8 国际象棋棋盘 ArUco 角点检测节点。
 
 通过检测棋盘四个角上的 ArUco 标签来定位棋盘，并发布：
   - /chessboard_corners_3d（ChessboardCorners）—— 四个角点在相机坐标系中的 3D 坐标

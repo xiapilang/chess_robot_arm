@@ -104,11 +104,9 @@ def matrix_to_base_point_homography(col, row, cam_corners, H, board_z):
 # 抓取-放置逻辑
 # ============================================================
 
-# ROLLBACK_MANUAL_FAR: compute_gripper_orient 返回 (orient, free_rot)
 def compute_gripper_orient(x, y, default_orient, force_far=False):
     """远点由 FAR_CELLS 手动指定，不再用距离阈值。"""
     dist = math.hypot(x, y)
-    # ROLLBACK_MANUAL_FAR: 仅 force_far 触发远点
     if force_far:
         rospy.loginfo(f"  远点 ({x:.3f},{y:.3f}), 解除旋转限制+远点中转站")
         orient = np.array([FAR_TRANSIT["rx"], FAR_TRANSIT["ry"], FAR_TRANSIT["rz"]])
@@ -120,7 +118,6 @@ def compute_gripper_orient(x, y, default_orient, force_far=False):
         tilt = min((dist - GRIPPER_TILT_THRESHOLD) / 0.25 * GRIPPER_MAX_JOINT5_DEG,
                    GRIPPER_MAX_JOINT5_DEG)
     return np.array([0.0, 180.0 - tilt, GRIPPER_FIXED_YAW_DEG]), False
-# END ROLLBACK_MANUAL_FAR
 
 
 def pick_and_place(arm, src_uci, dst_uci, to_base_func, piece_type=""):
@@ -144,7 +141,6 @@ def pick_and_place(arm, src_uci, dst_uci, to_base_func, piece_type=""):
     place_row_off = ROW_PLACE_OFFSETS.get(d_row, {"x": 0.0, "y": 0.0})
     place_col_off = COL_PLACE_OFFSETS.get(d_col, {"x": 0.0, "y": 0.0})
 
-    # ROLLBACK_MANUAL_FAR: 手动指定远点，关闭距离阈值
     pick_is_far = (s_row, s_col) in FAR_CELLS
     place_is_far = (d_row, d_col) in FAR_CELLS
 
@@ -174,7 +170,7 @@ def pick_and_place(arm, src_uci, dst_uci, to_base_func, piece_type=""):
                   + ROW_PLACE_Z_OFFSET.get(d_row, 0.0) \
                   + (FAR_PLACE_Z_OFFSET if place_is_far else 0.0) \
                   + (FAR_ROW_Z_OFFSET.get(d_row, 0.0) if place_is_far else 0.0)
-    # END ROLLBACK_FREE_ROTATION
+
 
     rospy.loginfo(f"抓取 {src_uci}: matrix({s_row},{s_col}) → base({s_x:.3f},{s_y:.3f},{s_z:.3f})")
     if pick_row_off["x"] or pick_row_off["y"]:
@@ -189,7 +185,6 @@ def pick_and_place(arm, src_uci, dst_uci, to_base_func, piece_type=""):
         rospy.loginfo(f"  逐列偏移 col={d_col}: x={place_col_off['x']:.3f} y={place_col_off['y']:.3f}")
     rospy.loginfo(f"  +XY偏移 → ({place_x:.3f},{place_y:.3f},{place_z:.3f})")
 
-    # ROLLBACK_FREE_ROTATION: 计算姿态，1行/a列强制远点
     pick_orient, pick_free = compute_gripper_orient(pick_x, pick_y, [drx, dry, drz], pick_is_far)
     place_orient, place_free = compute_gripper_orient(place_x, place_y, [drx, dry, drz], place_is_far)
 
@@ -207,7 +202,7 @@ def pick_and_place(arm, src_uci, dst_uci, to_base_func, piece_type=""):
             rospy.logerr("移动到远点中转站失败。")
             return False
     else:
-    # END ROLLBACK_FREE_ROTATION
+
         rospy.loginfo(f"步骤0: 移动到安全中转点 ({PICK_TRANSIT['x']:.3f}, {PICK_TRANSIT['y']:.3f}, {PICK_TRANSIT['z']:.3f})")
         if not arm.move_to_cartesian_pose(PICK_TRANSIT["x"], PICK_TRANSIT["y"], PICK_TRANSIT["z"], drx, dry, drz):
             rospy.logerr("移动到中转点失败。")

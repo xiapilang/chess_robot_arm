@@ -143,15 +143,11 @@ ROW_PLACE_OFFSETS = {
 # --- 远点特殊处理 ---
 GRIPPER_TILT_THRESHOLD = 0.48   # 开始倾斜的距离阈值(m)
 GRIPPER_MAX_JOINT5_DEG = 30.0   # 第5关节最大旋转角度(度)
-# ROLLBACK_FREE_ROTATION: 远点专用中转点，替换默认 PICK_TRANSIT
 FAR_TRANSIT = {"x": 0.531, "y": 0.079, "z": 0.085,
                "rx": 26.097, "ry": 177.116, "rz": 80.475}
-# ROLLBACK_FREE_ROTATION: 远点抓取/放置 Z 轴额外偏移
 FAR_PICK_Z_OFFSET  = 0.001   # 远点抓取 Z 偏移
 FAR_PLACE_Z_OFFSET = 0.003   # 远点放置 Z 偏移
-# ROLLBACK_FREE_ROTATION: 远点夹爪闭合度（值越大闭合越紧）
-FAR_GRIPPER_CLOSE  = 0.85    # 远点抓取闭合
-# ROLLBACK_MANUAL_FAR: 手动指定远点格子 (row, col)，关闭距离阈值判断
+FAR_GRIPPER_CLOSE  = 0.85    # 远点夹爪闭合度
 FAR_CELLS = {
     (7, 0), (7, 1), (7, 2), (7, 3), (7, 4), (7, 5), (7, 6), (7, 7),  # 第1行 a1..h1
     (6, 7), (5, 7), (4, 7), (3, 7), (6, 6), (6, 5), (5, 6), (6, 4)                                  # a2..a5 b2..b5 c3..c5
@@ -266,7 +262,6 @@ ROW_Z_OFFSET = {
 ROW_PLACE_Z_OFFSET = {
     2: 0.003,   # 第6横排放置
 }
-# ROLLBACK_FREE_ROTATION: 远点+第6/7/8横排专用 Z 偏移
 FAR_ROW_Z_OFFSET = {
     0: -0.006,   # 第8横排
     1: -0.006,   # 第7横排
